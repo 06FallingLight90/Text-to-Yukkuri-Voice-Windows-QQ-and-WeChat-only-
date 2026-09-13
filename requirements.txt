@@ -1,0 +1,18 @@
+# YouKuLiChaSpeak — Python runtime dependencies
+#
+# The synthesis sidecar under synth/ has its own package.json; run
+#   npm install
+# inside synth/ as well.
+#
+# customtkinter is pinned: the widget UI is written against the 5.2 API and
+# 6.x changes several widget signatures.
+
+customtkinter==5.2.2
+affine>=2.4.0
+numpy>=2.0
+psutil>=5.9
+PyAutoGUI>=0.9.54
+resvg>=0.2.0
+sounddevice>=0.4.6
+soundfile>=0.12
+Pillow>=10.0

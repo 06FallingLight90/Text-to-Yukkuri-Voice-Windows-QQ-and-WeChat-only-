@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node synthesis sidecar (package-lock.json IS committed, for reproducible installs)
+synth/node_modules/
+
+# Local study checkouts of upstream projects (not part of the project)
+_reference/
+
+# Generated audio and logs
+samples/
+*.log
+*.wav
+!assets/**/*.wav
+
+# Local user settings live in %USERPROFILE%\.youkuli-chaspeak, not here
+config.json
+
+# PyInstaller
+build/
+dist/
+*.spec

@@ -1,0 +1,16 @@
+{
+  "name": "youkuli-chaspeak-synth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Offline Chinese/Japanese yukkuri (AquesTalk) speech synthesis sidecar for YouKuLiChaSpeak",
+  "license": "MIT",
+  "bin": {
+    "youkuli-synth": "./synthesize.mjs"
+  },
+  "dependencies": {
+    "aquestalk.js": "^1.0.7",
+    "kanji2koe-openjtalk": "^0.1.0",
+    "pinyin-pro": "^3.29.4"
+  }
+}
