@@ -15,6 +15,13 @@
 *.yml  text eol=lf
 *.yaml text eol=lf
 
+# Extension-less files need an explicit rule, or core.autocrlf rewrites them on
+# checkout and they show up as spurious modifications.
+LICENSE               text eol=lf
+.gitignore            text eol=lf
+.gitattributes        text eol=lf
+requirements.txt      text eol=lf
+
 # Binary assets
 *.png binary
 *.ico binary
