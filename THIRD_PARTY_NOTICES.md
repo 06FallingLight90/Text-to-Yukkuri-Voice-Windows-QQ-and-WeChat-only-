@@ -3,6 +3,11 @@
 YouKuLiChaSpeak is distributed under the MIT License (see `LICENSE`). It builds
 on the work listed below; every component keeps its own copyright and license.
 
+> `LICENSE` is deliberately kept as the **unmodified MIT text and nothing else**.
+> GitHub's license detection requires that; appending attribution prose to it
+> makes the repository show up as `NOASSERTION` instead of `MIT`. Everything of
+> that kind belongs in this file.
+
 Full license texts for the components whose terms require them to be shipped
 alongside are in [`licenses/`](licenses/):
 
