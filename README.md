@@ -1,6 +1,6 @@
 # 文字转油库里 · YouKuLiChaSpeak
 
-在 Windows 上打字，把文字以**油库里语音**发到微信当前聊天——发出去的是**微信原生语音气泡**，不是一个音频文件。
+在 Windows 上打字，把文字以**油库里语音**发到微信或QQ当前聊天——发出去的是**微信原生语音气泡**，不是一个音频文件。
 
 语音**完全在本机离线合成**，不调用任何在线 TTS 接口，不需要 API Key，不联网。
 
@@ -53,9 +53,9 @@
 
 本项目需要的是**标准版单根 VB-CABLE**。不需要 `VB-CABLE A+B`、`VB-CABLE C+D`、`Hi-Fi Cable` 或 `VoiceMeeter`。
 
-1. 下载 `VBCABLE_Driver_Pack45.zip` 并**完整解压**（不要在压缩包里直接运行安装程序）
+1. 下载 `VBCABLE_Driver_Pack45.zip` 并**完整解压**
 2. 64 位 Windows 右键 `VBCABLE_Setup_x64.exe` → **以管理员身份运行**
-3. 安装驱动后**必须重启 Windows**
+3. 安装驱动后，若没有新增设备，则需要**重启 Windows**
 4. 重启后声音设备里会出现播放端 `CABLE Input` 和录音端 `CABLE Output`
 5. 把 Windows 的**默认输入设备（麦克风）设为 `CABLE Output (VB-Audio Virtual Cable)`**
 
@@ -519,7 +519,7 @@ python -c "import audio; audio.list_output_devices()"
 | **vendor 进来的源码** | XIAYM-gh/yukkuri-mandarin-js (MIT) | 源码旁**保留原 LICENSE** → `synth/vendor/yukkuri-mandarin/LICENSE` |
 | **npm 依赖** | aquestalk.js、kanji2koe-openjtalk、pinyin-pro、v86… | 只登记许可证标识，**不复制进仓库**，文本随 npm 包分发 |
 
-### ⚠️ 最大的风险点：AquesTalk 音色不是开源的
+### ⚠️ AquesTalk 音色不是开源的
 
 AquesTalk 引擎与音色库归 **AQUEST 株式会社**所有，条款要点（[官方许可证页](https://www.a-quest.com/licence.html)）：
 
@@ -547,36 +547,3 @@ AquesTalk 引擎与音色库归 **AQUEST 株式会社**所有，条款要点（[
 - ❌ 不要自己镜像/托管音色包
 - ❌ 不要把它做成在线合成服务
 - ✅ 让用户自己 `npm install`
-
-### 上传到 GitHub 前的检查清单
-
-代码侧已经就绪，逐条对应：
-
-| # | 要求 | 现状 |
-| --- | --- | --- |
-| 1 | 自己的 `LICENSE` | ✅ MIT，GitHub 能自动识别 |
-| 2 | 派生作品的许可证全文随附 | ✅ `licenses/AEVEC-....txt` |
-| 3 | vendor 代码保留原许可证 | ✅ `synth/vendor/yukkuri-mandarin/LICENSE` |
-| 4 | 图标等资源的许可证全文 | ✅ `licenses/Apache-2.0.txt`（Material Symbols） |
-| 5 | **不提交任何第三方二进制/模型/音色库** | ✅ 扫描为 0 个 `.zip/.wasm/.dll/.exe/.bin` |
-| 6 | **不提交密钥** | ✅ 密钥在 `%USERPROFILE%\.youkuli-chaspeak\`，不在仓库里 |
-| 7 | 忽略本地研究用的上游克隆 | ✅ `.gitignore` 里的 `_reference/` |
-| 8 | Windows 批处理保持 CRLF | ✅ `.gitattributes` 强制 + `tools/check_repo.py` 会检查 |
-
-**操作时的两个注意点：**
-
-1. 在 GitHub 建仓库时**不要**勾选自动生成 README / .gitignore / LICENSE，避免和本地文件冲突。
-2. **第一次 `git add` 之后、`git commit` 之前，一定先跑 `git status`**，确认列表里**没有** `_reference/`、`node_modules/`、`samples/` 或任何 `.log`。这三样一旦进了历史，清理起来很麻烦（要重写历史）。
-
-```bat
-git init
-git add .
-git status          :: 在这里停下来检查一遍
-git commit -m "Initial commit"
-```
-
-### 应用图标：已确认没有版权问题
-
-`assets/app-icon.ico` / `app-icon.png` 是从 AEVEC 仓库带过来的，内容是**绿色的对话气泡 + 三条白色圆角竖条**（表示声波）——纯几何矢量图形，**不含任何动漫人物、插画或照片素材**，也没有东方同人图的成分。
-
-所以按 AEVEC 的 MIT 许可证沿用即可，署名已经写进 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 的 Bundled assets 一节。**不需要替换。**
