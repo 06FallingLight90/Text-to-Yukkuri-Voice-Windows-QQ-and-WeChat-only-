@@ -139,7 +139,9 @@ python tools\check_default_devices.py
 ## 安装
 
 ```bat
-git clone <本仓库地址>
+:: 末尾的 YouKuLiChaSpeak 是本地目录名。必须显式指定，否则 git 会用仓库名建目录
+:: （就是很长的那串），后面的 cd 就对不上了。
+git clone https://github.com/jat785/Text-to-Yukkuri-Voice-Windows-QQ-and-WeChat-only-.git YouKuLiChaSpeak
 cd YouKuLiChaSpeak
 
 :: Python 依赖
