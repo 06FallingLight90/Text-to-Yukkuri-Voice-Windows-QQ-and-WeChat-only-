@@ -78,7 +78,7 @@
 | **窗口尺寸 ≥ 650×500** | 低于此值坐标会失效 |
 | **不能用最大化窗口标定** | 最大化窗口的尺寸程序改不了，而固定尺寸是坐标长期有效的前提 |
 | **显示缩放改变后要重标** | 坐标按标定时的 DPI 记录。Windows 缩放从 100% 改到 125% 之类，像素位置就会偏移 |
-| **窗口尺寸不能改动** | 坐标定位后窗口的比例大小不能变动，否则坐标定位会产生偏差（位置不动） |
+| **窗口尺寸不能改动** | 坐标是按标定时的窗口尺寸比例记录的，尺寸一变就全部偏移。**不过程序在每次发送前会自动把窗口调回标定时的尺寸**，所以通常不用你操心；窗口放在屏幕哪个位置都行 |
 | **不能是 RDP 会话** | 远程桌面会隔离本机虚拟声卡端点，程序会直接拒绝运行并说明原因 |
 | **系统** | 只支持 Windows 10/11（用到 DPAPI、WASAPI、Core Audio） |
 
@@ -139,10 +139,10 @@ python tools\check_default_devices.py
 ## 安装
 
 ```bat
-:: 末尾的 YouKuLiChaSpeak 是本地目录名。必须显式指定，否则 git 会用仓库名建目录
-:: （就是很长的那串），后面的 cd 就对不上了。
-git clone https://github.com/jat785/Text-to-Yukkuri-Voice-Windows-QQ-and-WeChat-only-.git YouKuLiChaSpeak
-cd YouKuLiChaSpeak
+:: 末尾的 YukuriSpeak 是本地目录名。必须显式指定，否则 git 会用仓库名建目录
+:: （就是很长的那一串），后面的 cd 就对不上了。
+git clone https://github.com/jat785/Text-to-Yukkuri-Voice-Windows-QQ-and-WeChat-only-.git YukuriSpeak
+cd YukuriSpeak
 
 :: Python 依赖
 python -m pip install -r requirements.txt
@@ -391,7 +391,7 @@ python tools\measure_leading_silence.py
 ## 项目结构
 
 ```
-YouKuLiChaSpeak/
+YukuriSpeak/
 ├─ app.pyw                      GUI：主窗口 + 托盘 + 快速浮层
 ├─ engine.py                    编排层：翻译 → 合成 → 校验 → 切窗口 → 录音 → 播放 → 发送
 ├─ targets.py                   目标注册表（微信 / QQ），engine 只面向接口
