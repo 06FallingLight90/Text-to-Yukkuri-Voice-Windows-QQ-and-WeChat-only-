@@ -2,7 +2,8 @@
 
 Neither WeChat nor QQ exposes usable UI Automation controls, so the voice
 buttons are located by position. This tool measures those positions once, by
-having you park the mouse over a control while a countdown runs.
+having you park the mouse over a control while a countdown runs; pressing Enter
+ends that countdown immediately.
 
 * **WeChat** - click to record, click to send. Three hover steps.
 * **QQ** - you put QQ into voice mode yourself (the 语音消息 button moves between
@@ -20,6 +21,7 @@ SPDX-License-Identifier: MIT
 from __future__ import annotations
 
 import argparse
+import msvcrt
 import sys
 import time
 from pathlib import Path
@@ -39,12 +41,37 @@ import windowing  # noqa: E402
 pyautogui.FAILSAFE = False
 
 
+def enter_pressed() -> bool:
+    """Whether Enter was hit since the last check, discarding everything typed.
+
+    Draining the buffer matters: a leftover newline would otherwise answer the
+    next ``input()`` prompt - "保存这次标定结果？[Y/n]" - all by itself.
+    """
+    pressed = False
+    while msvcrt.kbhit():
+        if msvcrt.getch() in (b"\r", b"\n"):
+            pressed = True
+    return pressed
+
+
 def countdown_capture(label: str, seconds: int) -> tuple[int, int]:
-    """Count down, then read the mouse position."""
+    """Count down, then read the mouse position.
+
+    Enter cuts the wait short, because the countdown is only there to keep the
+    mouse still - once the pointer is parked, the rest of it is dead time.
+    """
     print(f"\n>>> 请把鼠标移到【{label}】上，不要点击，停在那里别动。")
-    for remaining in range(seconds, 0, -1):
+    print("    （按回车立即记录，不必等满）")
+    remaining = seconds
+    while remaining > 0:
         print(f"    {remaining} 秒后记录 ...")
-        time.sleep(1)
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if enter_pressed():
+                remaining = 0
+                break
+            time.sleep(0.05)
+        remaining -= 1
     x, y = pyautogui.position()
     print(f"    已记录鼠标位置：({x}, {y})")
     return x, y
