@@ -99,6 +99,18 @@ def window_class_name(hwnd: int) -> str:
     return buffer.value
 
 
+def window_title(hwnd: int) -> str:
+    length = user32.GetWindowTextLengthW(hwnd)
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buffer, length + 1)
+    return buffer.value
+
+
+def foreground_window() -> int:
+    """Handle of the window that currently has focus; 0 when there is none."""
+    return int(user32.GetForegroundWindow())
+
+
 def client_geometry(hwnd: int) -> tuple[int, int, int, int, int, int]:
     """``(left, top, width, height, right, bottom)`` of the client area, screen coords."""
     rect = wintypes.RECT()
@@ -351,6 +363,7 @@ __all__ = [
     "find_windows",
     "force_client_size",
     "foreground_process_name",
+    "foreground_window",
     "is_maximized",
     "is_minimized",
     "load_offsets",
@@ -359,4 +372,5 @@ __all__ = [
     "require_foreground",
     "save_offsets",
     "window_class_name",
+    "window_title",
 ]

@@ -65,15 +65,26 @@ def resolve_target(name: str | None):
     return config.target_module()
 
 
-def prepare_window(module) -> tuple[int, int, int, int, int, int] | None:
-    """Locate the target's main window and sanity-check it."""
-    windows = module.find_main_windows()
-    print(f"\n找到的{module.LABEL}主窗口数量：{len(windows)}")
-    if len(windows) != 1:
-        print(f"需要恰好一个{module.LABEL}主窗口。请打开{module.LABEL}（只保留一个主窗口）后重试。")
-        return None
+def prepare_window(module) -> tuple[int, tuple[int, int, int, int, int, int]] | None:
+    """Locate the window the target will drive and sanity-check it.
 
-    geometry = windowing.client_geometry(windows[0])
+    Returns the window handle alongside its client geometry, so the tool
+    measures against exactly the window it just reported instead of enumerating
+    a second time and possibly picking a different one.
+    """
+    windows = module.find_main_windows()
+    print(f"\n找到可发送的{module.LABEL}窗口数量：{len(windows)}")
+    if len(windows) != 1:
+        print(
+            f"{module.LABEL} 需要恰好一个可发送的窗口。\n"
+            "经典模式的 QQ 请只留一个要发送的聊天窗口（主面板不算）；"
+            "关掉多余的窗口后重试。"
+        )
+        return None
+    hwnd = windows[0]
+    print(f"窗口标题：{windowing.window_title(hwnd)!r}")
+
+    geometry = windowing.client_geometry(hwnd)
     _left, _top, width, height, _right, _bottom = geometry
     if width < windowing.MIN_WINDOW_WIDTH or height < windowing.MIN_WINDOW_HEIGHT:
         print(
@@ -82,14 +93,14 @@ def prepare_window(module) -> tuple[int, int, int, int, int, int] | None:
         )
         return None
 
-    if windowing.is_maximized(windows[0]):
+    if windowing.is_maximized(hwnd):
         print(
             f"\n{module.LABEL} 窗口目前是【最大化】状态。\n"
             "最大化窗口的尺寸无法被程序固定，请先点右上角的还原按钮再重新运行本工具。"
         )
         return None
 
-    return geometry
+    return hwnd, geometry
 
 
 def calibrate_wechat(hwnd: int, geometry) -> int:
@@ -160,7 +171,10 @@ def calibrate_qq(hwnd: int, geometry) -> int:
         "\nQQ 的「语音消息」按钮在私聊和群聊里位置不一样，所以由**你自己**点击它\n"
         "进入语音模式；程序只负责「按住说话 -> 播音频 -> 松开」这一步。\n\n"
         "因此只需要标定一个位置：「按住说话」按钮。\n"
-        f"同时会把 {width}×{height} 记录为固定尺寸（位置随便你放哪）。"
+        f"同时会把 {width}×{height} 记录为固定尺寸（位置随便你放哪）。\n\n"
+        "坐标是相对**上面那个窗口**的右下角记录的。QQ 在【经典模式】下每个聊天\n"
+        "是一个独立窗口，程序用的就是它（主面板开着也不影响）；换界面模式或换\n"
+        "窗口尺寸后要重新标定。"
     )
     input("\n准备好后按回车开始 ...")
 
@@ -252,10 +266,10 @@ def main() -> int:
         return 1
     print(f"目标：{module.LABEL}")
 
-    geometry = prepare_window(module)
-    if geometry is None:
+    prepared = prepare_window(module)
+    if prepared is None:
         return 1
-    hwnd = module.find_main_windows()[0]
+    hwnd, geometry = prepared
 
     try:
         if module.KEY == "qq":
