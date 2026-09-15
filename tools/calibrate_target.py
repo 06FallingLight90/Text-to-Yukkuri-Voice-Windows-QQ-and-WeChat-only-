@@ -423,7 +423,10 @@ def calibrate_qq(hwnd: int, geometry, title: str) -> int:
     print("=" * 62)
     print(
         "会调用和正式发送相同的代码：按住「按住说话」，然后按 Esc 取消并松开。\n"
-        "QQ 需要仍停在语音模式。"
+        "QQ 需要仍停在语音模式。\n\n"
+        "因为按住的时间只有零点几秒，最后还按了 Esc 取消，所以**不会真的发出语音**。\n"
+        "正确的结果是 QQ 弹出「按键时间太短」的提示——这说明按键确实落在了\n"
+        "「按住说话」上，而且 QQ 收到了。"
     )
     if not confirm("\n开始实测？"):
         print("已跳过实测。可以回主界面发送了。")
@@ -452,11 +455,38 @@ def calibrate_qq(hwnd: int, geometry, title: str) -> int:
         print("  已按 Esc 取消并松开。")
 
     print()
-    if ok:
-        print("标定完成。回主界面之前，请确认 QQ 里没有多出语音消息。")
-    else:
+    if not ok:
         print("没有走到按住这一步，请确认坐标后重跑本工具。")
-    return 0 if ok else 1
+        return 1
+
+    # The press is deliberately brief and ends with Esc, so no voice message is
+    # sent. The signal that the coordinates are right is QQ's own "按键时间太短"
+    # toast: it proves the press landed on 按住说话 and QQ received it. Asking
+    # about a *voice message* was asking for the wrong thing.
+    try:
+        landed = confirm("\n刚才 QQ 里是否弹出了「按键时间太短」的提示？")
+    except (EOFError, KeyboardInterrupt):
+        landed = None  # non-interactive run: do not call the calibration failed
+        print()
+
+    if landed is None:
+        print(
+            "标定已保存。请自行确认 QQ 里出现了「按键时间太短」的提示——\n"
+            "有就是坐标正确；如果反而发出了语音、或者什么都没发生，请重新标定。"
+        )
+        return 0
+    if landed:
+        print(
+            "  那就对了：按键落在了「按住说话」上，QQ 也收到了，坐标可用。\n"
+            "  可以回主界面发送了。"
+        )
+        return 0
+    print(
+        "  那说明按键没有落在「按住说话」上。如果 QQ 里反而多出了语音消息、\n"
+        "  或者什么都没发生，都请重新标定一次（注意窗口要完整在主显示器内，\n"
+        "  标定过程中不要改变窗口尺寸）。"
+    )
+    return 1
 
 
 def main() -> int:
