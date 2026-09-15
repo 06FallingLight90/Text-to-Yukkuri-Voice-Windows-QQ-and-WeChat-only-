@@ -674,6 +674,9 @@ class SettingsDialog(ctk.CTkToplevel):
         self.resizable(True, True)
         self.transient(owner.root)
         self.grab_set()
+        # The settings window is only *owned* by the main window, so a pinned
+        # main window - which sits in the topmost band - would cover it.
+        self.attributes("-topmost", bool(owner.pinned))
         self.configure(fg_color=SURFACE)
 
         header = ctk.CTkFrame(self, fg_color="transparent")
@@ -1309,7 +1312,10 @@ class QuickSendWindow(ctk.CTkToplevel):
         self._focus_text()
         self.after_idle(self._focus_text)
         self.after(60, self._focus_text)
-        self.after(220, lambda: self.attributes("-topmost", False))
+        if not self.owner.pinned:
+            # Only drop out of the topmost band when the main window is not
+            # pinned - otherwise this overlay would sink behind it after 220 ms.
+            self.after(220, lambda: self.attributes("-topmost", False))
 
     def _focus_text(self, retries: int = 3) -> None:
         if not self.winfo_exists() or self.state() == "withdrawn":
@@ -1381,6 +1387,14 @@ class WidgetApp:
         self._settings_icon = svg_icon("settings", "#34413A", 22)
         self._mic_icon = svg_icon("mic", "#FFFFFF", 22)
         self._trash_icon = svg_icon("delete", PRIMARY, 21)
+        # The pin reads grey when off and green when on, so the header shows at a
+        # glance which state the window is in.
+        self._pin_off_icon = svg_icon("push_pin", "#34413A", 22)
+        self._pin_on_icon = svg_icon("push_pin", PRIMARY, 22)
+        #: Whether the main window is kept above other applications. Session-only
+        #: on purpose: it is a "keep this in front while I work in the chat
+        #: client" toggle, not a saved preference.
+        self.pinned = False
         self._build_ui()
         self.quick_window = QuickSendWindow(self)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1476,6 +1490,30 @@ class WidgetApp:
         settings_label.place(relx=0.5, rely=0.5, anchor="center")
         for control in (settings_surface, settings_label):
             control.bind("<Button-1>", lambda _event: self.open_settings())
+
+        # Packed after the settings button, so it lands to its left - the same
+        # place the pin sits in a chat window's title bar.
+        pin_surface = ctk.CTkFrame(
+            header,
+            width=44,
+            height=44,
+            corner_radius=22,
+            fg_color=CARD,
+            border_width=1,
+            border_color="#D4DDD7",
+            cursor="hand2",
+        )
+        pin_surface.pack(side="right", padx=(0, 8))
+        pin_surface.pack_propagate(False)
+        self.pin_label = ctk.CTkLabel(
+            pin_surface,
+            text="",
+            image=self._pin_off_icon,
+            cursor="hand2",
+        )
+        self.pin_label.place(relx=0.5, rely=0.5, anchor="center")
+        for control in (pin_surface, self.pin_label):
+            control.bind("<Button-1>", lambda _event: self.toggle_pin())
 
         target = ctk.CTkFrame(
             outer,
@@ -1687,6 +1725,29 @@ class WidgetApp:
         if not self.busy:
             SettingsDialog(self)
 
+    def toggle_pin(self) -> None:
+        """Keep the main window above other applications, or stop doing that.
+
+        Same idea as the pin in a chat window's title bar: it is what makes the
+        window usable while the chat client is in front, which is exactly when
+        this app is being used.
+        """
+        self.pinned = not self.pinned
+        self.apply_pinned_state()
+
+    def apply_pinned_state(self) -> None:
+        """Push ``self.pinned`` to the window and to the icon.
+
+        Separate from the toggle because other code paths flash the window to the
+        front and must hand the z-order back to whatever the pin says - clearing
+        it unconditionally would silently unpin the window.
+        """
+        self.root.attributes("-topmost", bool(self.pinned))
+        self.pin_label.configure(
+            image=self._pin_on_icon if self.pinned else self._pin_off_icon
+        )
+        logging.info("窗口置顶：%s", "开启" if self.pinned else "关闭")
+
     def on_text_modified(self, _event: tk.Event | None = None) -> None:
         content = self.text.get("1.0", "end-1c")
         if len(content) > 500:
@@ -1819,8 +1880,10 @@ class WidgetApp:
     def show_main_window(self) -> None:
         self.root.deiconify()
         self.root.lift()
+        # Flash to the front, then hand the z-order back to the pin. Clearing
+        # topmost unconditionally here would silently undo it.
         self.root.attributes("-topmost", True)
-        self.root.after(160, lambda: self.root.attributes("-topmost", False))
+        self.root.after(160, self.apply_pinned_state)
         self.root.after(20, self.text.focus_set)
 
     def show_quick_window(self) -> None:
