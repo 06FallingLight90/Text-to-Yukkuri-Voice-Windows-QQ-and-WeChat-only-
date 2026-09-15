@@ -889,6 +889,41 @@ class SettingsDialog(ctk.CTkToplevel):
         ).pack(anchor="w", padx=18, pady=(6, 0))
         self.refresh_calibration_summary()
 
+        # Neither client's UI offers a microphone picker any more, so the default
+        # recording device is the only lever there is. This is on by default
+        # because the alternative is asking the user to leave Windows pointed at
+        # the cable permanently, which breaks their real microphone everywhere.
+        field_label("录音设备", 20)
+        self.switch_capture_var = tk.BooleanVar(
+            value=owner.config.auto_switch_capture
+        )
+        ctk.CTkSwitch(
+            card,
+            text="发送时自动把默认录音设备切到 CABLE（发完自动换回）",
+            variable=self.switch_capture_var,
+            onvalue=True,
+            offvalue=False,
+            switch_width=42,
+            switch_height=21,
+            progress_color=PRIMARY,
+            fg_color="#C6D4CC",
+            button_color="#FFFFFF",
+            button_hover_color="#F0F5F2",
+            text_color=TEXT,
+            font=ctk.CTkFont(FONT_FAMILY, 12, "bold"),
+        ).pack(anchor="w", padx=18, pady=(0, 5))
+        ctk.CTkLabel(
+            card,
+            text="开启后，程序会在发送的那几秒里把默认录音设备临时切到 "
+            "CABLE Output，发完立刻换回你自己的设备。\n"
+            "注意：这几秒内其他正在用麦克风的程序（语音通话、OBS）会收不到声音。\n"
+            "关掉它就需要你手动把默认输入设备设为 CABLE Output。",
+            font=ctk.CTkFont(FONT_FAMILY, 11),
+            text_color=MUTED,
+            wraplength=430,
+            justify="left",
+        ).pack(anchor="w", padx=18)
+
         field_label("翻译方式（「中转日」使用）", 18)
         self.provider_var = tk.StringVar(
             value=translate.PROVIDER_LABELS[owner.config.translate_provider]
@@ -1182,6 +1217,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self.owner.config.voice = self.current_voice()
         self.owner.config.speed = int(round(self.speed_var.get()))
         self.owner.config.quick_hotkey = normalized
+        self.owner.config.auto_switch_capture = bool(self.switch_capture_var.get())
 
         self.owner.config.translate_provider = self.current_provider()
         self.owner.config.youdao_app_key = self.youdao_key_var.get().strip()

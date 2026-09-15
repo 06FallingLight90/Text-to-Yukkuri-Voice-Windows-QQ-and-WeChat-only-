@@ -130,6 +130,11 @@ class AppConfig:
         self.geometry = DEFAULT_GEOMETRY
         self.device_name = audio.DEFAULT_DEVICE_NAME
         self.auto_activate_wechat = True
+        #: Point the Windows default recording device at VB-CABLE for the few
+        #: seconds a send takes, then put the user's own device back. Neither
+        #: client exposes a microphone picker any more, so this is what lets the
+        #: user keep their real microphone as the default.
+        self.auto_switch_capture = True
         #: Which chat client to send to: "wechat" or "qq". Each has its own
         #: calibrated coordinates and its own recording gesture.
         self.target = targets.DEFAULT_TARGET
@@ -164,6 +169,7 @@ class AppConfig:
             )
             self.device_name = str(data.get("device_name") or audio.DEFAULT_DEVICE_NAME)
             self.auto_activate_wechat = bool(data.get("auto_activate_wechat", True))
+            self.auto_switch_capture = bool(data.get("auto_switch_capture", True))
             selected = str(data.get("target") or targets.DEFAULT_TARGET)
             self.target = selected if selected in targets.TARGETS else targets.DEFAULT_TARGET
             self.quick_hotkey = str(data.get("quick_hotkey") or "").strip()
@@ -198,6 +204,7 @@ class AppConfig:
             "geometry": self.geometry,
             "device_name": self.device_name,
             "auto_activate_wechat": self.auto_activate_wechat,
+            "auto_switch_capture": self.auto_switch_capture,
             "target": self.target,
             "quick_hotkey": self.quick_hotkey,
             "translate_zh_to_ja": self.translate_zh_to_ja,
@@ -255,6 +262,14 @@ class VoiceEngine:
 
     def __init__(self) -> None:
         self.synth = SynthClient()
+        # A send that died between swapping the default recording device and
+        # restoring it leaves the whole machine recording from the cable, which
+        # nothing reveals until some other app needs the microphone. Clean that
+        # up on every start rather than trusting the previous run to have exited.
+        try:
+            audio.restore_pending_capture_swap()
+        except Exception:
+            logging.warning("检查未还原的默认录音设备失败", exc_info=True)
 
     # -- pre-flight --------------------------------------------------------
 
@@ -280,17 +295,26 @@ class VoiceEngine:
         if len(config.target_module().find_main_windows()) != 1:
             return False, f"请打开{config.target_label()}并点开要发送的聊天窗口"
 
-        # Each target may need a device check of its own: QQ records through the
-        # Windows communications default while WeChat uses the multimedia
-        # default, so a working WeChat setup can still leave QQ silent.
-        ok, detail = config.target_module().preflight(config)
-        if not ok:
-            return False, detail
+        if config.auto_switch_capture:
+            # The app makes the cable the default itself, so the question is not
+            # "is the cable the default now" but "can it be made the default".
+            # That is what lets the user keep their real microphone selected.
+            try:
+                audio.require_switchable_cable()
+            except Exception as error:
+                return False, str(error)
+        else:
+            # Each target may need a device check of its own: QQ records through
+            # the Windows communications default while WeChat uses the multimedia
+            # default, so a working WeChat setup can still leave QQ silent.
+            ok, detail = config.target_module().preflight(config)
+            if not ok:
+                return False, detail
 
-        try:
-            audio.require_cable_microphone()
-        except Exception as error:
-            return False, str(error)
+            try:
+                audio.require_cable_microphone()
+            except Exception as error:
+                return False, str(error)
 
         try:
             audio.find_output_device(config.device_name)
@@ -324,6 +348,7 @@ class VoiceEngine:
 
         temp_path: Path | None = None
         hwnd: int | None = None
+        swap: audio.DefaultCaptureSwap | None = None
         finished = False
         # Wall-clock marks for the end-of-send timeline. Timings are logged as one
         # line so a slow send can be attributed without reading the whole log.
@@ -398,9 +423,23 @@ class VoiceEngine:
             progress(f"音频 {duration:.1f} 秒 · 正在切换到{target.LABEL}…")
             hwnd = target.activate_main_window()
 
-            # WeChat records from the default microphone; re-check now that the
-            # user has had a chance to change it.
-            audio.require_cable_microphone()
+            # The client resolves "the default microphone" when it opens its
+            # capture stream, which happens on the click below - so the swap has
+            # to land before that, and is undone in the finally block. Keeping it
+            # this late is deliberate: for those seconds every other app holding
+            # the default microphone records silence.
+            if config.auto_switch_capture:
+                # Deliberately no name argument: the recording half of the cable
+                # is fixed, and config.device_name is the *playback* half
+                # ("CABLE Input") that the app plays into. Passing that here made
+                # the swap look for a capture endpoint that does not exist.
+                swap = audio.DefaultCaptureSwap()
+                swap.enter()
+                marks["swapped"] = time.monotonic()
+            else:
+                # Manual mode: the user is responsible for having set the
+                # default themselves, so verify it rather than trusting them.
+                audio.require_cable_microphone()
 
             # enter_voice_mode returns the instant the target is recording, so
             # start feeding audio straight away. For QQ this also holds the
@@ -436,14 +475,19 @@ class VoiceEngine:
             def ms(key: str) -> float:
                 return (marks[key] - marks["start"]) * 1000
 
+            # Where the device swap ends, if it happened, so the two "before the
+            # click" figures still add up when it did not.
+            swapped_at = marks.get("swapped", marks["prepare"])
+
             logging.info(
-                "发送时间线：%s %.0f ms | 准备音频 %.0f ms | 切换微信+点击 %.0f ms | "
-                "等待录音就绪+播放 %.0f ms | 点发送 %.0f ms | 合计 %.0f ms | "
-                "音频 %.2f 秒 | 后端 %s",
+                "发送时间线：%s %.0f ms | 准备音频 %.0f ms | 切换默认录音设备 %.0f ms | "
+                "切换窗口+点击 %.0f ms | 等待录音就绪+播放 %.0f ms | 点发送 %.0f ms | "
+                "合计 %.0f ms | 音频 %.2f 秒 | 后端 %s",
                 "翻译+合成" if translated else "合成",
                 (marks["synth"] - marks["start"]) * 1000,
                 (marks["prepare"] - marks["synth"]) * 1000,
-                (marks["recording"] - marks["prepare"]) * 1000,
+                (swapped_at - marks["prepare"]) * 1000,
+                (marks["recording"] - swapped_at) * 1000,
                 (marks["played"] - marks["recording"]) * 1000,
                 (marks["finished"] - marks["played"]) * 1000,
                 ms("finished"),
@@ -464,6 +508,11 @@ class VoiceEngine:
                 # later step failed. For QQ this is also what releases the held
                 # mouse button, so it must run no matter what.
                 target.leave_recording_mode(hwnd)
+            if swap is not None:
+                # After the gesture, never before: releasing the button is what
+                # ends the recording, and the client may still be reading the
+                # capture device until then. leave() never raises.
+                swap.leave()
             if temp_path is not None:
                 try:
                     temp_path.unlink(missing_ok=True)

@@ -18,6 +18,7 @@ SPDX-License-Identifier: MIT
 from __future__ import annotations
 
 import ctypes
+import json
 import logging
 import os
 import threading
@@ -606,14 +607,348 @@ def default_render_name(role: int = ROLE_MULTIMEDIA) -> str:
     return default_endpoint_name(_FLOW_RENDER, role)
 
 
+# --- switching the default recording endpoint -------------------------------
+#
+# Neither WeChat 4.x nor QQNT 9.x exposes a microphone picker any more, and both
+# simply record "the default microphone". The only way to point them at VB-CABLE
+# is to make VB-CABLE the default for as long as a send takes, then put the
+# user's own device back.
+#
+# SetDefaultEndpoint lives on IPolicyConfig, which has no SDK header. Two details
+# are load-bearing and were verified on Windows 11 22631:
+#
+# * It is slot 13 *of the IPolicyConfig vtable*, so the object must be created
+#   with the IPolicyConfig IID below. Creating it with IID_IUnknown returns a
+#   differently shaped vtable - its slots [4..15] are IPolicyConfig's [0..11] -
+#   and calling slot 13 on that reaches an unrelated function (it crashes).
+# * Verifying slot 3 (GetMixFormat) returns a sane WAVEFORMATEX is a cheap way
+#   to prove the slot numbering before trusting slot 13.
+
+#: The *recording* half of the cable. Note this is not DEFAULT_DEVICE_NAME,
+#: which names the playback half ("CABLE Input").
+DEFAULT_CAPTURE_DEVICE_NAME = "CABLE Output"
+
+_CLSCTX_ALL = 0x17
+_DEVICE_STATE_ACTIVE = 0x1
+
+_CLSID_POLICY_CONFIG_CLIENT = _GUID.parse("870AF99C-171D-4F9E-AF0D-E63DF40C2BC9")
+_IID_POLICY_CONFIG = _GUID.parse("f8679f50-850a-41cf-9c72-430f290290c8")
+
+#: Every role a send may have to cover. The console role is included because a
+#: few applications still resolve their default through it, and covering it costs
+#: one extra call - whereas missing the role a client actually uses shows up as a
+#: silent voice message, which is far more expensive to debug.
+SWAP_ROLES = (ROLE_CONSOLE, ROLE_MULTIMEDIA, ROLE_COMMUNICATIONS)
+
+#: Written immediately before a swap and deleted once it is undone. If the app
+#: dies mid-send this survives, and the next start restores the user's device
+#: instead of leaving the machine recording from the cable forever.
+PENDING_SWAP_FILE = Path.home() / ".youkuli-chaspeak" / "capture_swap.json"
+
+
+def _device_enumerator():
+    ole32 = ctypes.windll.ole32
+    ole32.CoInitializeEx(None, 0)
+    enumerator = ctypes.c_void_p()
+    hr = ole32.CoCreateInstance(
+        ctypes.byref(_CLSID_MMDEVICE_ENUMERATOR),
+        None,
+        _CLSCTX_ALL,
+        ctypes.byref(_IID_IMMDEVICE_ENUMERATOR),
+        ctypes.byref(enumerator),
+    )
+    if hr < 0 or not enumerator:
+        raise RuntimeError("无法创建 Windows 音频端点枚举器")
+    return enumerator
+
+
+def _endpoint_id(device) -> str:
+    """``IMMDevice::GetId`` - the ``{0.0.1...}`` string the policy API takes."""
+    out = ctypes.c_wchar_p()
+    hr = _com_call(
+        device, 5, ctypes.c_long, [ctypes.POINTER(ctypes.c_wchar_p)], ctypes.byref(out)
+    )
+    if hr < 0 or not out.value:
+        return ""
+    text = out.value
+    ctypes.windll.ole32.CoTaskMemFree(ctypes.cast(out, ctypes.c_void_p))
+    return text
+
+
+def list_capture_endpoints() -> list[tuple[str, str]]:
+    """``(friendly name, device id)`` for every active recording endpoint."""
+    if os.name != "nt":
+        return []
+    enumerator = _device_enumerator()
+    collection = ctypes.c_void_p()
+    try:
+        hr = _com_call(
+            enumerator, 3, ctypes.c_long,
+            [ctypes.c_int, ctypes.c_ulong, ctypes.POINTER(ctypes.c_void_p)],
+            _FLOW_CAPTURE,
+            _DEVICE_STATE_ACTIVE,
+            ctypes.byref(collection),
+        )
+        if hr < 0 or not collection:
+            return []
+        count = ctypes.c_int()
+        _com_call(
+            collection, 3, ctypes.c_long, [ctypes.POINTER(ctypes.c_int)],
+            ctypes.byref(count),
+        )
+        found: list[tuple[str, str]] = []
+        for index in range(count.value):
+            device = ctypes.c_void_p()
+            hr = _com_call(
+                collection, 4, ctypes.c_long,
+                [ctypes.c_ulong, ctypes.POINTER(ctypes.c_void_p)],
+                index,
+                ctypes.byref(device),
+            )
+            if hr < 0 or not device:
+                continue
+            try:
+                found.append((_endpoint_friendly_name(device), _endpoint_id(device)))
+            finally:
+                _release(device)
+        return found
+    finally:
+        _release(collection)
+        _release(enumerator)
+
+
+def capture_endpoint_id(name_part: str = DEFAULT_CAPTURE_DEVICE_NAME) -> str:
+    """Device id of the first active recording endpoint whose name matches."""
+    wanted = name_part.casefold()
+    for name, device_id in list_capture_endpoints():
+        if device_id and wanted in name.casefold():
+            return device_id
+    return ""
+
+
+def default_capture_endpoint_id(role: int = ROLE_MULTIMEDIA) -> str:
+    """Device id of the default recording endpoint for ``role`` (``""`` if none)."""
+    if os.name != "nt":
+        return ""
+    enumerator = _device_enumerator()
+    device = ctypes.c_void_p()
+    try:
+        hr = _com_call(
+            enumerator, 4, ctypes.c_long,
+            [ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)],
+            _FLOW_CAPTURE,
+            role,
+            ctypes.byref(device),
+        )
+        if hr < 0 or not device:
+            return ""
+        return _endpoint_id(device)
+    finally:
+        _release(device)
+        _release(enumerator)
+
+
+def _policy_config():
+    ole32 = ctypes.windll.ole32
+    ole32.CoInitializeEx(None, 0)
+    policy = ctypes.c_void_p()
+    hr = ole32.CoCreateInstance(
+        ctypes.byref(_CLSID_POLICY_CONFIG_CLIENT),
+        None,
+        _CLSCTX_ALL,
+        ctypes.byref(_IID_POLICY_CONFIG),
+        ctypes.byref(policy),
+    )
+    if hr < 0 or not policy:
+        raise RuntimeError(
+            "Windows 音频策略接口不可用，无法自动切换默认录音设备。"
+        )
+    return policy
+
+
+def set_default_capture_endpoint(device_id: str, role: int) -> None:
+    """Make ``device_id`` the default recording endpoint for one role."""
+    policy = _policy_config()
+    try:
+        hr = _com_call(
+            policy, 13, ctypes.c_long,
+            [ctypes.c_wchar_p, ctypes.c_int],
+            device_id,
+            role,
+        )
+        if hr < 0:
+            raise RuntimeError(f"切换默认录音设备失败（0x{hr & 0xFFFFFFFF:08X}）")
+    finally:
+        _release(policy)
+
+
+class DefaultCaptureSwap:
+    """Temporarily point every default recording role at VB-CABLE.
+
+    While this is active the *whole machine* records from the cable, not just
+    the chat client - another app holding the default microphone (a call, OBS)
+    sees silence for those seconds. That is the price of the approach, so the
+    swap is kept as short as possible: it starts after the audio has been
+    prepared and the target window activated, and ends as soon as the gesture
+    has been released.
+
+    Usage is deliberately split into ``enter``/``leave`` rather than only a
+    context manager, because the caller has to restore the device *after*
+    releasing the chat client's recording gesture, which happens in its own
+    ``finally`` block.
+
+    ``leave`` never raises: it runs while unwinding a failed send, where a
+    restore error must not mask the real failure.
+    """
+
+    def __init__(
+        self,
+        capture_name: str = DEFAULT_CAPTURE_DEVICE_NAME,
+        roles: tuple[int, ...] = SWAP_ROLES,
+        state_file: Path | None = PENDING_SWAP_FILE,
+    ) -> None:
+        # Named ``capture_name``, not ``device_name``: callers also deal with the
+        # *playback* endpoint ("CABLE Input") and handing that one in here looks
+        # plausible but can never resolve to a recording endpoint.
+        self.capture_name = capture_name
+        self.roles = tuple(roles)
+        self.state_file = state_file
+        self.device_id = ""
+        self.saved: dict[int, str] = {}
+        self.switched = False
+
+    def enter(self) -> bool:
+        """Switch the defaults. Returns whether anything actually changed."""
+        self.device_id = capture_endpoint_id(self.capture_name)
+        if not self.device_id:
+            raise RuntimeError(
+                f"找不到「{self.capture_name}」录音设备。请确认已安装 VB-CABLE，"
+                "并且它在声音设置的「录制」里是启用状态。"
+            )
+        self.saved = {role: default_capture_endpoint_id(role) for role in self.roles}
+        if all(self.saved.get(role) == self.device_id for role in self.roles):
+            # Already pointing at the cable (the user set it themselves) - leave
+            # it alone rather than "restoring" it to the cable afterwards.
+            self.saved = {}
+            logging.info("默认录音设备已经是 %s，本次不切换", self.capture_name)
+            return False
+
+        self._write_state()
+        for role in self.roles:
+            set_default_capture_endpoint(self.device_id, role)
+        self.switched = True
+        logging.info(
+            "已把 %d 个默认录音角色切到 %s（原值：%s）",
+            len(self.roles),
+            self.capture_name,
+            {role: (device[:24] + "…" if device else "") for role, device in self.saved.items()},
+        )
+        return True
+
+    def leave(self) -> None:
+        """Put the user's devices back. Never raises."""
+        try:
+            if self.switched:
+                for role, device_id in self.saved.items():
+                    if device_id:
+                        set_default_capture_endpoint(device_id, role)
+        except Exception:
+            logging.warning("恢复默认录音设备失败", exc_info=True)
+        finally:
+            self.switched = False
+            self._clear_state()
+
+    def __enter__(self) -> "DefaultCaptureSwap":
+        self.enter()
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        self.leave()
+        return False
+
+    def _write_state(self) -> None:
+        if self.state_file is None:
+            return
+        try:
+            self.state_file.parent.mkdir(parents=True, exist_ok=True)
+            self.state_file.write_text(
+                json.dumps({str(role): device for role, device in self.saved.items()}),
+                encoding="utf-8",
+            )
+        except OSError:
+            logging.warning("无法写入设备切换状态文件", exc_info=True)
+
+    def _clear_state(self) -> None:
+        if self.state_file is None:
+            return
+        try:
+            self.state_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def restore_pending_capture_swap(state_file: Path | None = PENDING_SWAP_FILE) -> bool:
+    """Undo a swap that a crash left behind. Returns whether anything was restored.
+
+    Called at startup: being left recording from the cable is invisible until
+    something else needs the microphone, so it is worth cleaning up eagerly.
+    """
+    if state_file is None or not state_file.is_file():
+        return False
+    try:
+        saved = json.loads(state_file.read_text(encoding="utf-8"))
+    except Exception:
+        logging.warning("设备切换状态文件无法解析，已删除", exc_info=True)
+        saved = {}
+    restored = 0
+    for role_text, device_id in (saved or {}).items():
+        if not device_id:
+            continue
+        try:
+            set_default_capture_endpoint(str(device_id), int(role_text))
+            restored += 1
+        except Exception:
+            logging.warning("恢复默认录音设备失败（role=%s）", role_text, exc_info=True)
+    try:
+        state_file.unlink(missing_ok=True)
+    except OSError:
+        pass
+    if restored:
+        logging.info("已还原上次异常退出留下的 %d 个默认录音设备", restored)
+    return restored > 0
+
+
+def require_switchable_cable() -> str:
+    """The cable must exist *and* be selectable, when the app switches for you.
+
+    This replaces :func:`require_cable_microphone` whenever the app is going to
+    set the default itself: the question is no longer "is the cable the current
+    default" but "can the cable be made the default".
+    """
+    device_id = capture_endpoint_id(DEFAULT_CAPTURE_DEVICE_NAME)
+    if not device_id:
+        raise RuntimeError(
+            f"找不到「{DEFAULT_CAPTURE_DEVICE_NAME}」录音设备。\n"
+            "请确认已安装 VB-CABLE，并在声音设置的「录制」选项卡里能看到并启用它。"
+        )
+    _policy_config()  # raises with its own message when unavailable
+    return device_id
+
+
 __all__ = [
+    "DEFAULT_CAPTURE_DEVICE_NAME",
     "DEFAULT_DEVICE_NAME",
     "MAX_VOICE_SECONDS",
+    "PENDING_SWAP_FILE",
+    "SWAP_ROLES",
     "WECHAT_PROCESS_NAMES",
+    "DefaultCaptureSwap",
     "PreparedPlayback",
     "ROLE_COMMUNICATIONS",
     "ROLE_CONSOLE",
     "ROLE_MULTIMEDIA",
+    "capture_endpoint_id",
+    "default_capture_endpoint_id",
     "default_capture_name",
     "default_endpoint_name",
     "default_input_name",
@@ -621,6 +956,7 @@ __all__ = [
     "find_output_device",
     "find_output_devices",
     "foreground_process_name",
+    "list_capture_endpoints",
     "list_output_devices",
     "play_audio_with_fallback",
     "play_candidates",
@@ -628,7 +964,10 @@ __all__ = [
     "prepare_output_candidates",
     "require_cable_microphone",
     "require_local_audio_session",
+    "require_switchable_cable",
     "require_wechat_focused",
     "resample_linear",
+    "restore_pending_capture_swap",
+    "set_default_capture_endpoint",
     "trim_leading_silence",
 ]
