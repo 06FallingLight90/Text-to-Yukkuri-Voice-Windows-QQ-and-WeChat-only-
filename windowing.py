@@ -128,6 +128,20 @@ def primary_screen_size() -> tuple[int, int]:
     return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
 
 
+def fully_on_primary_monitor(hwnd: int) -> bool:
+    """Whether the whole client area lies inside the primary monitor.
+
+    Calibrated offsets are relative to the client area, so a window that hangs
+    off the edge still produces arithmetic that "works" - and clicks that land
+    on nothing, or on whatever else is under that point. The screen capture this
+    project uses is primary-monitor-only too, so a partly visible window is not
+    supported in the first place.
+    """
+    left, top, _width, _height, right, bottom = client_geometry(hwnd)
+    primary_width, primary_height = primary_screen_size()
+    return left >= 0 and top >= 0 and right <= primary_width and bottom <= primary_height
+
+
 def is_minimized(hwnd: int) -> bool:
     return bool(user32.IsIconic(hwnd))
 
@@ -370,6 +384,7 @@ __all__ = [
     "force_client_size",
     "foreground_process_name",
     "foreground_window",
+    "fully_on_primary_monitor",
     "is_maximized",
     "is_minimized",
     "load_offsets",

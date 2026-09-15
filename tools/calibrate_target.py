@@ -21,10 +21,39 @@ SPDX-License-Identifier: MIT
 from __future__ import annotations
 
 import argparse
+import ctypes
 import msvcrt
 import sys
 import time
 from pathlib import Path
+
+
+def declare_dpi_awareness() -> None:
+    """Put this tool in the same coordinate space as the GUI.
+
+    Creating any CustomTkinter window switches the process to *per-monitor* DPI
+    aware, so the app reads and writes physical pixels. Without matching that,
+    Windows quietly virtualises every coordinate this tool reads instead.
+
+    This has to run before pyautogui is imported: pyautogui declares *system*
+    DPI awareness on import, and Windows honours only the first such call per
+    process, so a later attempt is ignored without any error.
+
+    At 100% scaling the two spaces agree and nothing shows. At 125% or 150% the
+    calibrator would store offsets scaled by 1/scale and the app would aim off by
+    that factor - the same fixed-distance miss a stale reference corner causes,
+    and just as silent.
+    """
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PER_MONITOR_AWARE
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+declare_dpi_awareness()
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -39,6 +68,7 @@ import windowing  # noqa: E402
 # A calibration tool must not abort because the user parked the pointer in a
 # screen corner, which is pyautogui's default fail-safe.
 pyautogui.FAILSAFE = False
+
 
 
 def enter_pressed() -> bool:
@@ -75,6 +105,49 @@ def countdown_capture(label: str, seconds: int) -> tuple[int, int]:
     x, y = pyautogui.position()
     print(f"    已记录鼠标位置：({x}, {y})")
     return x, y
+
+
+class ReferenceCorner:
+    """The window corner offsets are measured against, re-read at every capture.
+
+    Offsets are stored relative to the client area's *bottom-right* corner, and
+    the room between reading that corner and parking the mouse is tens of
+    seconds - plenty of time to move the window. A corner read once at the start
+    therefore bakes a constant shift into every offset, and the result is not an
+    error message but clicks landing a fixed distance from the button.
+
+    It also watches the client *size*, which the offsets genuinely depend on:
+    a resize mid-calibration invalidates everything measured so far, so that is
+    reported and stopped rather than silently saved.
+    """
+
+    def __init__(self, hwnd: int, label: str) -> None:
+        self.hwnd = hwnd
+        self.label = label
+        self.size: tuple[int, int] | None = None
+
+    def corner(self) -> tuple[int, int]:
+        _left, _top, width, height, right, bottom = windowing.client_geometry(self.hwnd)
+        if self.size is None:
+            self.size = (width, height)
+        elif (width, height) != self.size:
+            print(
+                f"\n  !! {self.label} 窗口尺寸在标定过程中改变了"
+                f"（{self.size[0]}×{self.size[1]} → {width}×{height}）。\n"
+                "     坐标是相对窗口尺寸记录的，尺寸一变整套坐标都会失准，因此本次标定作废。\n"
+                "     请先把窗口调到最终尺寸，之后别再改动，再重新运行本工具。"
+            )
+            raise SystemExit(1)
+        return right, bottom
+
+
+def capture_offset(label: str, seconds: int, reference: ReferenceCorner) -> tuple[int, int]:
+    """Capture a point and return it as an offset from the *current* corner."""
+    x, y = countdown_capture(label, seconds)
+    right, bottom = reference.corner()
+    offset = (x - right, y - bottom)
+    print(f"    参照右下角：({right}, {bottom})  →  相对偏移 ({offset[0]:+d}, {offset[1]:+d})")
+    return offset
 
 
 def confirm(prompt: str) -> bool:
@@ -129,6 +202,21 @@ def prepare_window(module) -> tuple[int, tuple[int, int, int, int, int, int], st
         )
         return None
 
+    # A window hanging off the edge is not merely unsupported: it silently
+    # produces offsets that look plausible and aim at nothing, because they are
+    # measured against a corner that is partly off-screen.
+    if not windowing.fully_on_primary_monitor(hwnd):
+        _left, _top, _width, _height, right, bottom = geometry
+        primary_width, primary_height = windowing.primary_screen_size()
+        print(
+            f"\n{module.LABEL} 窗口有一部露在主显示器外面，无法标定。\n"
+            f"  客户区右下角在 ({right}, {bottom})，而主显示器只有 "
+            f"{primary_width}×{primary_height}。\n"
+            "标定出来的坐标会指向屏幕外，发送时点不到任何东西。\n"
+            "请把窗口完全拖进主显示器（位置不影响坐标，放哪都行），再重新运行本工具。"
+        )
+        return None
+
     return hwnd, geometry, title
 
 
@@ -138,16 +226,17 @@ def calibrate_wechat(hwnd: int, geometry) -> int:
     print(
         "\n标定会记录三个位置，全部相对于这个右下角。\n"
         f"同时会把 {width}×{height} 记录为固定尺寸 —— 以后程序每次发送前都会把\n"
-        "微信窗口调回这个尺寸（位置随便你放哪），这样一套坐标就永远有效。"
+        "微信窗口调回这个尺寸（位置随便你放哪），这样一套坐标就永远有效。\n"
+        "标定期间窗口可以随便移动（参照角每次都会重新读），但**尺寸不要改**。"
     )
+    reference = ReferenceCorner(hwnd, "微信")
     input("\n准备好后按回车开始 ...")
 
     print("\n" + "-" * 62)
     print("第 1 步：语音按钮")
     print("-" * 62)
     print("先点一下微信里任意一个聊天，让输入框显示出来（不要点开语音，保持正常状态）。")
-    open_x, open_y = countdown_capture("微信输入框工具栏里的「话筒 / 语音」按钮", 10)
-    open_offset = (open_x - right, open_y - bottom)
+    open_offset = capture_offset("微信输入框工具栏里的「话筒 / 语音」按钮", 10, reference)
 
     print("\n" + "-" * 62)
     print("第 2 步：绿色发送按钮")
@@ -155,15 +244,17 @@ def calibrate_wechat(hwnd: int, geometry) -> int:
     print("请在这段时间内完成两件事：")
     print("  1) 点击刚才那个语音按钮，让微信进入录音模式")
     print("  2) 把鼠标移到右侧那个绿色圆形「发送」按钮上停住")
-    send_x, send_y = countdown_capture("绿色圆形发送按钮", 20)
-    send_offset = (send_x - right, send_y - bottom)
+    send_offset = capture_offset("绿色圆形发送按钮", 20, reference)
 
     print("\n" + "-" * 62)
     print("第 3 步：取消按钮")
     print("-" * 62)
     print("如果微信还停在录音模式，请把鼠标移到左边那个「X / 取消」上。")
-    cancel_x, cancel_y = countdown_capture("录音条左侧的「取消 X」", 10)
-    cancel_gap = send_x - cancel_x
+    cancel_offset = capture_offset("录音条左侧的「取消 X」", 10, reference)
+
+    # Both gaps are computed in offset space, not from raw screen coordinates, so
+    # they stay correct even if the window was moved between the two steps.
+    cancel_gap = send_offset[0] - cancel_offset[0]
 
     print("\n" + "=" * 62)
     print("标定结果")
@@ -172,9 +263,10 @@ def calibrate_wechat(hwnd: int, geometry) -> int:
     print(f"  发送按钮  相对右下角 ({send_offset[0]:+d}, {send_offset[1]:+d})")
     print(f"  取消间距  发送按钮向左 {cancel_gap} 像素")
     print(f"  固定尺寸  {width}×{height}")
-    if abs(cancel_y - send_y) > 12:
+    if abs(cancel_offset[1] - send_offset[1]) > 12:
         print(
-            f"\n  注意：取消按钮和发送按钮不在同一水平线上（y 相差 {cancel_y - send_y} 像素），"
+            f"\n  注意：取消按钮和发送按钮不在同一水平线上"
+            f"（y 相差 {cancel_offset[1] - send_offset[1]} 像素），"
             "程序会按发送按钮的高度去点取消，可能需要手动调整。"
         )
 
@@ -207,6 +299,7 @@ def calibrate_qq(hwnd: int, geometry, title: str) -> int:
         "以后发送时程序只认这种模式的窗口，所以 QQ 的设置、群文件之类的窗口\n"
         "不会被误当成聊天窗口。换界面模式或换窗口尺寸后要重新标定。"
     )
+    reference = ReferenceCorner(hwnd, "QQ")
     input("\n准备好后按回车开始 ...")
 
     print("\n" + "-" * 62)
@@ -218,8 +311,7 @@ def calibrate_qq(hwnd: int, geometry, title: str) -> int:
         "  2) 手动单击「语音消息」按钮，让输入区切换成语音模式\n"
         "然后等倒计时结束前，把鼠标停在出现的「按住说话」按钮上。"
     )
-    record_x, record_y = countdown_capture("语音模式下的「按住说话」按钮", 20)
-    record_offset = (record_x - right, record_y - bottom)
+    record_offset = capture_offset("语音模式下的「按住说话」按钮", 20, reference)
 
     print("\n" + "=" * 62)
     print("标定结果")
@@ -283,6 +375,9 @@ def calibrate_qq(hwnd: int, geometry, title: str) -> int:
 
 
 def main() -> int:
+    # Before anything touches a coordinate.
+    declare_dpi_awareness()
+
     parser = argparse.ArgumentParser(description="标定聊天软件的语音控件坐标")
     parser.add_argument(
         "--target",
