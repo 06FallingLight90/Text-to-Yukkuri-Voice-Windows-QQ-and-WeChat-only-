@@ -278,7 +278,7 @@ class VoiceEngine:
             return False, str(error)
 
         if len(config.target_module().find_main_windows()) != 1:
-            return False, f"请打开一个{config.target_label()}主窗口"
+            return False, f"请打开{config.target_label()}并点开要发送的聊天窗口"
 
         # Each target may need a device check of its own: QQ records through the
         # Windows communications default while WeChat uses the multimedia

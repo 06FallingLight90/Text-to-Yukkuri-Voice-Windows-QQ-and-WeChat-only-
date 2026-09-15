@@ -25,6 +25,7 @@ import pyautogui
 import audio
 import windowing
 from windowing import (
+    CHROMIUM_WINDOW_CLASS,
     CalibrationError,
     MIN_WINDOW_HEIGHT,
     MIN_WINDOW_WIDTH,
@@ -32,12 +33,18 @@ from windowing import (
     client_geometry,
     find_windows,
     force_client_size,
+    foreground_window,
     is_minimized,
+    window_class_name,
 )
 
 KEY = "qq"
 LABEL = "QQ"
 PROCESS_NAMES = {"qq.exe"}
+
+#: Title of QQ's main panel. In 经典模式 the 按住说话 button is not in this
+#: window at all - every chat is its own top-level window titled after the
+#: contact or group. See :func:`find_qq_windows`.
 WINDOW_TITLE = "QQ"
 
 #: Offset of the 按住说话 button from the client area's bottom-right corner.
@@ -137,16 +144,64 @@ def preflight(config) -> tuple[bool, str]:
 # --- window -----------------------------------------------------------------
 
 
+def _qq_windows() -> list[tuple[int, str]]:
+    """Visible top-level ``(hwnd, title)`` pairs that could host a chat.
+
+    Only Chromium windows qualify: qq.exe also owns helper windows such as
+    ``GDI+ Window (QQ.exe)`` and ``Default IME``, whose titles would otherwise
+    pass the visibility check.
+    """
+    return [
+        (hwnd, title)
+        for hwnd, title in find_windows(PROCESS_NAMES)
+        if window_class_name(hwnd) == CHROMIUM_WINDOW_CLASS
+    ]
+
+
+def _prefer_foreground(windows: list[int]) -> list[int]:
+    """Collapse several chat windows down to the one the user is looking at.
+
+    Returns the list untouched when the foreground window is not one of them -
+    the caller then reports the count, which is a better error than silently
+    sending to the wrong chat.
+    """
+    if len(windows) <= 1:
+        return windows
+    focused = foreground_window()
+    return [focused] if focused in windows else windows
+
+
 def find_qq_windows() -> list[int]:
-    return [hwnd for hwnd, _title in find_windows(PROCESS_NAMES, WINDOW_TITLE)]
+    """Every window that carries an input bar, and therefore a 按住说话 button.
+
+    QQNT has two layouts and the voice button sits in a different window in
+    each, so this must not assume the main panel:
+
+    * 效率模式 - the chat area is embedded in the main panel, whose title is
+      exactly ``QQ``;
+    * 经典模式 - every chat is its own top-level window titled after the
+      contact or group (verified: ``Chrome_WidgetWin_1``, unowned, top-level),
+      and the main panel may be open at the same time or hidden in the tray.
+
+    The separate chat windows win whenever any exist, because that is where the
+    recording button actually is.
+    """
+    windows = _qq_windows()
+    chat_windows = [hwnd for hwnd, title in windows if title != WINDOW_TITLE]
+    if chat_windows:
+        return _prefer_foreground(chat_windows)
+    return _prefer_foreground(
+        [hwnd for hwnd, title in windows if title == WINDOW_TITLE]
+    )
 
 
 def activate_qq_window() -> int:
     windows = find_qq_windows()
     if len(windows) != 1:
         raise RuntimeError(
-            f"需要恰好一个 QQ 主窗口，当前找到 {len(windows)} 个。"
-            "请打开 QQ 主面板并保留一个窗口。"
+            f"需要恰好一个 QQ 聊天窗口，当前找到 {len(windows)} 个。"
+            "经典模式下请只留一个要发送的聊天窗口（主面板不算），"
+            "或者把目标聊天窗口切到最前面再试。"
         )
     hwnd = windows[0]
     try:
