@@ -165,6 +165,53 @@ def resolve_target(name: str | None):
     return config.target_module()
 
 
+def _mode_hint(module, title: str) -> str:
+    """Which layout a candidate window would be recorded as, for QQ."""
+    mode_for_title = getattr(module, "mode_for_title", None)
+    if mode_for_title is None:
+        return ""
+    labels = getattr(module, "UI_MODE_LABELS", {})
+    mode = mode_for_title(title)
+    return f"   → 记为【{labels.get(mode, mode)}】"
+
+
+def choose_window(module, candidates: list[int], preferred: list[int]) -> int | None:
+    """Ask which window to calibrate when more than one could be.
+
+    The tool cannot tell a chat window from QQ's 设置 / 群文件 windows by looking
+    at them, and the chosen window is what decides the recorded layout - so this
+    is the one place where guessing is least affordable. The stored layout is
+    offered as the default, which keeps the usual case to a single Enter.
+    """
+    print(f"\n找到 {len(candidates)} 个可标定的{module.LABEL}窗口，请选择要标定的那个：")
+    for index, hwnd in enumerate(candidates, start=1):
+        title = windowing.window_title(hwnd)
+        print(f"  [{index}] {title!r}{_mode_hint(module, title)}")
+
+    default_index = 1
+    if len(preferred) == 1 and preferred[0] in candidates:
+        default_index = candidates.index(preferred[0]) + 1
+
+    print(
+        "\n  效率模式请选标题恰好是 QQ 的主面板（聊天区就在里面）；\n"
+        "  经典模式请选你刚刚点过「语音消息」的那个聊天窗口。\n"
+        "  QQ 的「设置」「群文件」等窗口也会出现在这个列表里，别选它们。"
+    )
+    while True:
+        try:
+            raw = input(
+                f"\n选择 [1-{len(candidates)}]（直接回车 = {default_index}）："
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            raw = ""
+        if not raw:
+            return candidates[default_index - 1]
+        if raw.isdigit() and 1 <= int(raw) <= len(candidates):
+            return candidates[int(raw) - 1]
+        print("  请输入列表里的编号。")
+
+
 def prepare_window(module) -> tuple[int, tuple[int, int, int, int, int, int], str] | None:
     """Locate the window the target will drive and sanity-check it.
 
@@ -172,17 +219,35 @@ def prepare_window(module) -> tuple[int, tuple[int, int, int, int, int, int], st
     measures against exactly the window it just reported instead of enumerating
     a second time and possibly picking a different one. QQ needs the title: it
     is what decides which layout these coordinates belong to.
+
+    Candidates come from ``all_candidate_windows``, never from
+    ``find_main_windows``: the latter filters by the *recorded* layout, and
+    calibration is the step that establishes that record. Using it here is
+    circular - switching QQ to the other layout leaves the record pointing at
+    windows that no longer exist, and the tool reported "found 0 windows" with
+    the main panel sitting right there.
     """
-    windows = module.find_main_windows()
-    print(f"\n找到可发送的{module.LABEL}窗口数量：{len(windows)}")
-    if len(windows) != 1:
+    candidates = module.all_candidate_windows()
+    print(f"\n找到可标定的{module.LABEL}窗口数量：{len(candidates)}")
+    if not candidates:
         print(
-            f"{module.LABEL} 需要恰好一个可发送的窗口。\n"
-            "经典模式的 QQ 请只留一个要发送的聊天窗口（主面板不算）；"
-            "关掉多余的窗口后重试。"
+            f"没有找到可以标定的{module.LABEL}窗口。请检查：\n"
+            f"  1) {module.LABEL} 正在运行并且已经登录\n"
+            f"  2) {module.LABEL} 的窗口没有收进托盘——从任务栏点开一次让它显示出来\n"
+            "  3) 要标定的那个聊天已经打开\n"
+            "QQ 的两种界面模式都可以标定（效率模式是主面板，经典模式是独立聊天窗口），"
+            "但窗口必须可见。"
         )
         return None
-    hwnd = windows[0]
+
+    if len(candidates) == 1:
+        hwnd = candidates[0]
+    else:
+        chosen = choose_window(module, candidates, module.find_main_windows())
+        if chosen is None:
+            return None
+        hwnd = chosen
+
     title = windowing.window_title(hwnd)
     print(f"窗口标题：{title!r}")
 
@@ -191,10 +256,13 @@ def prepare_window(module) -> tuple[int, tuple[int, int, int, int, int, int], st
     # settings dialog is exactly when the chat client tends to be minimized, and
     # rejecting that as "窗口太小" both hides the real reason and is unreadable -
     # the console closes the moment this returns. Restore it and measure again.
+    #
+    # Restored by handle rather than through activate_main_window(), which would
+    # re-enumerate and hit the same stale-layout filter that got us here.
     if windowing.is_minimized(hwnd):
         print(f"{module.LABEL} 窗口当前是最小化的，先还原它再量尺寸 ...")
         try:
-            hwnd = module.activate_main_window()
+            windowing.activate_window(hwnd, module.PROCESS_NAMES, module.LABEL)
         except Exception as error:
             print(
                 f"\n无法还原 {module.LABEL} 窗口：{error}\n"

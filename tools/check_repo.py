@@ -38,6 +38,7 @@ TARGET_INTERFACE = (
     "load_offsets",
     "save_offsets",
     "find_main_windows",
+    "all_candidate_windows",
     "activate_main_window",
     "force_canonical_size",
     "voice_control_points",

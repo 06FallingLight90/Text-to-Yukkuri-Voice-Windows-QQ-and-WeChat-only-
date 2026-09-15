@@ -242,6 +242,19 @@ def find_qq_windows() -> list[int]:
     return _prefer_foreground(_windows_for_mode(_qq_windows(), mode))
 
 
+def all_candidate_windows() -> list[int]:
+    """Every visible QQ window the voice button could live in, unfiltered.
+
+    :func:`find_qq_windows` narrows this down using the layout recorded at
+    calibration. That is right for sending and wrong for calibrating, because
+    calibration is what *establishes* the layout: switch QQ to the other layout
+    and the stale record filters away the very window the user is trying to
+    calibrate. In efficiency mode with a stale "classic" record that made the
+    tool report "found 0 windows", with the main panel sitting right there.
+    """
+    return [hwnd for hwnd, _title in _qq_windows()]
+
+
 def _no_single_window_message(count: int, mode: str) -> str:
     """Explain a bad window count in terms of the layout that is configured."""
     if mode == UI_MODE_EFFICIENCY:
@@ -255,7 +268,8 @@ def _no_single_window_message(count: int, mode: str) -> str:
         return (
             f"需要恰好一个 QQ 聊天窗口，当前找到 {count} 个。\n"
             "标定记录的是【经典模式】——请只留一个要发送的聊天窗口"
-            "（主面板不算），或者把目标聊天窗口切到最前面再试。"
+            "（主面板不算），或者把目标聊天窗口切到最前面再试。\n"
+            "如果你刚把 QQ 换成效率模式，需要重新标定坐标。"
         )
     return (
         f"需要恰好一个 QQ 聊天窗口，当前找到 {count} 个。\n"
@@ -392,6 +406,7 @@ __all__ = [
     "UI_MODE_LABELS",
     "activate_main_window",
     "activate_qq_window",
+    "all_candidate_windows",
     "client_geometry",
     "enter_voice_mode",
     "find_main_windows",

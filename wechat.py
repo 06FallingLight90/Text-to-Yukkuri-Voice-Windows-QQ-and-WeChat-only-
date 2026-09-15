@@ -144,6 +144,16 @@ def find_wechat_windows() -> list[int]:
     return [hwnd for hwnd, _title in find_windows(PROCESS_NAMES, WINDOW_TITLE)]
 
 
+def all_candidate_windows() -> list[int]:
+    """Windows the calibration tool may measure against.
+
+    WeChat has a single layout, so this is the same list as
+    :func:`find_wechat_windows` - it exists so the calibration tool can ask
+    every target the same question.
+    """
+    return find_wechat_windows()
+
+
 def activate_wechat_window() -> int:
     """Bring the single WeChat main window to the foreground and return its hwnd."""
     windows = find_wechat_windows()
@@ -372,6 +382,7 @@ __all__ = [
     "SCAN_HEIGHT",
     "SCAN_WIDTH",
     "activate_wechat_window",
+    "all_candidate_windows",
     "activate_main_window",
     "client_capture_box",
     "client_geometry",
