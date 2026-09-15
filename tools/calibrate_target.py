@@ -186,6 +186,23 @@ def prepare_window(module) -> tuple[int, tuple[int, int, int, int, int, int], st
     title = windowing.window_title(hwnd)
     print(f"窗口标题：{title!r}")
 
+    # A minimized window reports the sentinel corner (-32000, -32000) and a
+    # nonsense client size of a few dozen pixels. Clicking 重新标定 from the
+    # settings dialog is exactly when the chat client tends to be minimized, and
+    # rejecting that as "窗口太小" both hides the real reason and is unreadable -
+    # the console closes the moment this returns. Restore it and measure again.
+    if windowing.is_minimized(hwnd):
+        print(f"{module.LABEL} 窗口当前是最小化的，先还原它再量尺寸 ...")
+        try:
+            hwnd = module.activate_main_window()
+        except Exception as error:
+            print(
+                f"\n无法还原 {module.LABEL} 窗口：{error}\n"
+                "请手动点开窗口（从任务栏恢复），再重新运行本工具。"
+            )
+            return None
+        print(f"  已还原，窗口标题：{windowing.window_title(hwnd)!r}")
+
     geometry = windowing.client_geometry(hwnd)
     _left, _top, width, height, _right, _bottom = geometry
     if width < windowing.MIN_WINDOW_WIDTH or height < windowing.MIN_WINDOW_HEIGHT:
@@ -384,6 +401,11 @@ def main() -> int:
         choices=sorted(targets.keys()),
         help="要标定的目标（默认取设置里的当前目标）",
     )
+    parser.add_argument(
+        "--pause-on-exit",
+        action="store_true",
+        help="结束后等待回车再退出（由 GUI 以新控制台启动时使用）",
+    )
     args = parser.parse_args()
 
     print("=" * 62)
@@ -409,12 +431,38 @@ def main() -> int:
         return 130
 
 
-if __name__ == "__main__":
+def hold_console_open() -> None:
+    """Wait for Enter, so a console that is about to vanish stays readable.
+
+    Only meaningful when the GUI started this in a console of its own: that
+    window closes the instant the process exits, taking every message with it -
+    including the ones that explain why the tool refused to calibrate. Skipped
+    when stdin is not a terminal (piped output, tests) so it can never hang.
+    """
     try:
-        raise SystemExit(main())
+        if not sys.stdin or not sys.stdin.isatty():
+            return
+    except Exception:
+        return
+    try:
+        input("\n按回车键关闭这个窗口 ...")
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
+if __name__ == "__main__":
+    exit_code = 0
+    try:
+        exit_code = main()
     except KeyboardInterrupt:
         print("\n已中断。")
-        raise SystemExit(130)
+        exit_code = 130
     except Exception as error:  # noqa: BLE001 - report anything useful to the user
         print(f"\n标定失败：{error}")
-        raise SystemExit(1)
+        exit_code = 1
+    finally:
+        # In a finally so this also runs when the tool aborts via SystemExit(1),
+        # which is how ReferenceCorner reports a mid-calibration resize.
+        if "--pause-on-exit" in sys.argv:
+            hold_console_open()
+    raise SystemExit(exit_code)

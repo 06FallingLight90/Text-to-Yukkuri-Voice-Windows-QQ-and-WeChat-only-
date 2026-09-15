@@ -60,7 +60,11 @@ def launch_calibration(target_key: str | None = None) -> bool:
             "请确认 tools/calibrate_target.py 存在。",
         )
         return False
-    command = [console_python(), str(CALIBRATE_SCRIPT)]
+    # --pause-on-exit: the console created below dies with the process, so
+    # without it any message explaining a refusal ("窗口已最小化" and friends)
+    # flashes past unread. The .bat wrapper has its own pause for its own launch
+    # path; this covers the one started from here.
+    command = [console_python(), str(CALIBRATE_SCRIPT), "--pause-on-exit"]
     if target_key:
         command += ["--target", target_key]
     try:
