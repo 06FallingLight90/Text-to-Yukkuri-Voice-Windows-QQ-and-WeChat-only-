@@ -267,6 +267,12 @@ def load_offsets(path: Path, defaults: dict) -> dict:
         elif isinstance(fallback, int):
             if isinstance(value, int):
                 offsets[key] = value
+        elif isinstance(fallback, str):
+            # Not cosmetic: QQ records which layout its coordinates were measured
+            # in, and silently dropping that would leave it guessing again.
+            # See qq.UI_MODE_*.
+            if isinstance(value, str):
+                offsets[key] = value
     return offsets
 
 

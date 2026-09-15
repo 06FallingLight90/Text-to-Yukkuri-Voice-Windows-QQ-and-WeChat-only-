@@ -1052,6 +1052,11 @@ class SettingsDialog(ctk.CTkToplevel):
             else:
                 record_dx, record_dy = offsets["record"]
                 lines.append(f"按住说话 ({record_dx:+d}, {record_dy:+d})")
+                # Which layout these coordinates belong to. Worth showing: it
+                # decides which QQ window gets driven, and a stale value is the
+                # usual reason QQ stops responding after a layout switch.
+                mode = offsets.get("ui_mode", module.UI_MODE_AUTO)
+                lines.append(f"界面模式 {module.UI_MODE_LABELS.get(mode, mode)}")
         else:
             open_dx, open_dy = offsets["open"]
             lines.append(f"语音按钮 ({open_dx:+d}, {open_dy:+d})")

@@ -92,12 +92,13 @@ def resolve_target(name: str | None):
     return config.target_module()
 
 
-def prepare_window(module) -> tuple[int, tuple[int, int, int, int, int, int]] | None:
+def prepare_window(module) -> tuple[int, tuple[int, int, int, int, int, int], str] | None:
     """Locate the window the target will drive and sanity-check it.
 
-    Returns the window handle alongside its client geometry, so the tool
+    Returns the window handle, its client geometry and its title, so the tool
     measures against exactly the window it just reported instead of enumerating
-    a second time and possibly picking a different one.
+    a second time and possibly picking a different one. QQ needs the title: it
+    is what decides which layout these coordinates belong to.
     """
     windows = module.find_main_windows()
     print(f"\n找到可发送的{module.LABEL}窗口数量：{len(windows)}")
@@ -109,7 +110,8 @@ def prepare_window(module) -> tuple[int, tuple[int, int, int, int, int, int]] | 
         )
         return None
     hwnd = windows[0]
-    print(f"窗口标题：{windowing.window_title(hwnd)!r}")
+    title = windowing.window_title(hwnd)
+    print(f"窗口标题：{title!r}")
 
     geometry = windowing.client_geometry(hwnd)
     _left, _top, width, height, _right, _bottom = geometry
@@ -127,7 +129,7 @@ def prepare_window(module) -> tuple[int, tuple[int, int, int, int, int, int]] | 
         )
         return None
 
-    return hwnd, geometry
+    return hwnd, geometry, title
 
 
 def calibrate_wechat(hwnd: int, geometry) -> int:
@@ -191,17 +193,19 @@ def calibrate_wechat(hwnd: int, geometry) -> int:
     return 0
 
 
-def calibrate_qq(hwnd: int, geometry) -> int:
+def calibrate_qq(hwnd: int, geometry, title: str) -> int:
     _left, _top, width, height, right, bottom = geometry
+    ui_mode = qq.mode_for_title(title)
     print(f"\n客户区：{width}×{height}，右下角屏幕坐标 ({right}, {bottom})")
     print(
         "\nQQ 的「语音消息」按钮在私聊和群聊里位置不一样，所以由**你自己**点击它\n"
         "进入语音模式；程序只负责「按住说话 -> 播音频 -> 松开」这一步。\n\n"
         "因此只需要标定一个位置：「按住说话」按钮。\n"
         f"同时会把 {width}×{height} 记录为固定尺寸（位置随便你放哪）。\n\n"
-        "坐标是相对**上面那个窗口**的右下角记录的。QQ 在【经典模式】下每个聊天\n"
-        "是一个独立窗口，程序用的就是它（主面板开着也不影响）；换界面模式或换\n"
-        "窗口尺寸后要重新标定。"
+        "坐标是相对**上面那个窗口**的右下角记录的，并且会把这个窗口属于哪种界面\n"
+        f"模式一起记下来——本次判定为【{qq.UI_MODE_LABELS[ui_mode]}】。\n"
+        "以后发送时程序只认这种模式的窗口，所以 QQ 的设置、群文件之类的窗口\n"
+        "不会被误当成聊天窗口。换界面模式或换窗口尺寸后要重新标定。"
     )
     input("\n准备好后按回车开始 ...")
 
@@ -222,6 +226,8 @@ def calibrate_qq(hwnd: int, geometry) -> int:
     print("=" * 62)
     print(f"  按住说话按钮  相对右下角 ({record_offset[0]:+d}, {record_offset[1]:+d})")
     print(f"  固定尺寸      {width}×{height}")
+    print(f"  界面模式      {qq.UI_MODE_LABELS[ui_mode]}")
+    print(f"  标定窗口      {title!r}")
 
     if not confirm("\n保存并做一次实测？"):
         print("已取消，未写入任何文件。")
@@ -230,6 +236,7 @@ def calibrate_qq(hwnd: int, geometry) -> int:
     path = qq.save_offsets(
         record_offset=record_offset,
         client_size=(width, height),
+        ui_mode=ui_mode,
     )
     print(f"\n已保存到：{path}")
 
@@ -296,11 +303,11 @@ def main() -> int:
     prepared = prepare_window(module)
     if prepared is None:
         return 1
-    hwnd, geometry = prepared
+    hwnd, geometry, title = prepared
 
     try:
         if module.KEY == "qq":
-            return calibrate_qq(hwnd, geometry)
+            return calibrate_qq(hwnd, geometry, title)
         return calibrate_wechat(hwnd, geometry)
     except KeyboardInterrupt:
         print("\n已中断。")

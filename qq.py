@@ -47,6 +47,31 @@ PROCESS_NAMES = {"qq.exe"}
 #: contact or group. See :func:`find_qq_windows`.
 WINDOW_TITLE = "QQ"
 
+#: Which QQ layout the calibrated coordinates belong to.
+#:
+#: The 按住说话 button sits in a different window in each layout, so one set of
+#: coordinates is only valid for one of them:
+#:
+#: * 效率模式 - the chat area is embedded in the main panel, titled exactly ``QQ``;
+#: * 经典模式 - every chat is its own top-level window titled after the contact
+#:   or group, and the main panel may be open at the same time.
+#:
+#: This is *measured, not guessed*. Titles alone cannot tell the two apart, and
+#: guessing from them is actively wrong: QQ's 设置 / 群文件 / 天气 windows are also
+#: visible top-level Chromium windows whose titles are not ``QQ``, so a
+#: title-based guess sends the recording gesture into a settings dialog. The
+#: calibration tool records the mode along with the coordinates instead.
+UI_MODE_AUTO = "auto"
+UI_MODE_EFFICIENCY = "efficiency"
+UI_MODE_CLASSIC = "classic"
+
+#: Human-readable names, for messages and the calibration tool.
+UI_MODE_LABELS = {
+    UI_MODE_AUTO: "自动（旧标定）",
+    UI_MODE_EFFICIENCY: "效率模式",
+    UI_MODE_CLASSIC: "经典模式",
+}
+
 #: Offset of the 按住说话 button from the client area's bottom-right corner.
 #: Measured by tools/calibrate_target.py --target qq.
 DEFAULT_RECORD_OFFSET = (-597, -80)
@@ -74,6 +99,9 @@ OFFSETS_FILE = Path.home() / ".youkuli-chaspeak" / f"{KEY}_offsets.json"
 DEFAULTS = {
     "record": DEFAULT_RECORD_OFFSET,
     "client_size": DEFAULT_CLIENT_SIZE,
+    # Offsets written before the mode was recorded load as "auto", which keeps
+    # the old title-based behaviour instead of failing.
+    "ui_mode": UI_MODE_AUTO,
 }
 
 _holding = False
@@ -90,10 +118,21 @@ def load_offsets() -> dict:
     return windowing.load_offsets(OFFSETS_FILE, DEFAULTS)
 
 
+def mode_for_title(title: str) -> str:
+    """Which layout a window belongs to, judged by its title.
+
+    Only ever called on the window the user just calibrated against, where the
+    title *is* a reliable signal: the main panel is the one titled exactly
+    ``QQ``, and a classic-mode chat window is titled after the contact or group.
+    """
+    return UI_MODE_EFFICIENCY if title == WINDOW_TITLE else UI_MODE_CLASSIC
+
+
 def save_offsets(
     *,
     record_offset: tuple[int, int] | None = None,
     client_size: tuple[int, int] | None = None,
+    ui_mode: str | None = None,
 ) -> Path:
     current = load_offsets()
     return windowing.save_offsets(
@@ -101,6 +140,7 @@ def save_offsets(
         {
             "client_size": client_size or current["client_size"],
             "record": record_offset if record_offset is not None else current["record"],
+            "ui_mode": ui_mode or current["ui_mode"],
         },
     )
 
@@ -171,27 +211,58 @@ def _prefer_foreground(windows: list[int]) -> list[int]:
     return [focused] if focused in windows else windows
 
 
+def _windows_for_mode(windows: list[tuple[int, str]], mode: str) -> list[int]:
+    """Narrow candidate windows down to the ones the layout says hold the button."""
+    if mode == UI_MODE_EFFICIENCY:
+        return [hwnd for hwnd, title in windows if title == WINDOW_TITLE]
+    if mode == UI_MODE_CLASSIC:
+        return [hwnd for hwnd, title in windows if title != WINDOW_TITLE]
+    # "auto": coordinates calibrated before the mode was recorded. Fall back to
+    # the title heuristic - correct for a plain efficiency setup, where the main
+    # panel is the only window, but unable to tell a chat window apart from a
+    # settings or 群文件 window.
+    chat_windows = [hwnd for hwnd, title in windows if title != WINDOW_TITLE]
+    if chat_windows:
+        return chat_windows
+    return [hwnd for hwnd, title in windows if title == WINDOW_TITLE]
+
+
 def find_qq_windows() -> list[int]:
     """Every window that carries an input bar, and therefore a 按住说话 button.
 
-    QQNT has two layouts and the voice button sits in a different window in
-    each, so this must not assume the main panel:
+    Which windows qualify follows the layout recorded at calibration time, not
+    the window titles: QQ's 设置, 群文件 and 天气 windows are all visible
+    top-level Chromium windows, so a title-based guess can pick one of them and
+    drive the recording gesture into a settings dialog.
 
-    * 效率模式 - the chat area is embedded in the main panel, whose title is
-      exactly ``QQ``;
-    * 经典模式 - every chat is its own top-level window titled after the
-      contact or group (verified: ``Chrome_WidgetWin_1``, unowned, top-level),
-      and the main panel may be open at the same time or hidden in the tray.
-
-    The separate chat windows win whenever any exist, because that is where the
-    recording button actually is.
+    Several classic-mode chat windows may still qualify; :func:`_prefer_foreground`
+    collapses those to the focused one when it can.
     """
-    windows = _qq_windows()
-    chat_windows = [hwnd for hwnd, title in windows if title != WINDOW_TITLE]
-    if chat_windows:
-        return _prefer_foreground(chat_windows)
-    return _prefer_foreground(
-        [hwnd for hwnd, title in windows if title == WINDOW_TITLE]
+    mode = load_offsets()["ui_mode"]
+    return _prefer_foreground(_windows_for_mode(_qq_windows(), mode))
+
+
+def _no_single_window_message(count: int, mode: str) -> str:
+    """Explain a bad window count in terms of the layout that is configured."""
+    if mode == UI_MODE_EFFICIENCY:
+        return (
+            f"需要恰好一个 QQ 主面板，当前找到 {count} 个。\n"
+            "标定记录的是【效率模式】，聊天区就嵌在主面板里——"
+            "请打开 QQ 主面板（标题 QQ）再发送。\n"
+            "如果你已经把 QQ 换成经典模式，需要重新标定坐标。"
+        )
+    if mode == UI_MODE_CLASSIC:
+        return (
+            f"需要恰好一个 QQ 聊天窗口，当前找到 {count} 个。\n"
+            "标定记录的是【经典模式】——请只留一个要发送的聊天窗口"
+            "（主面板不算），或者把目标聊天窗口切到最前面再试。"
+        )
+    return (
+        f"需要恰好一个 QQ 聊天窗口，当前找到 {count} 个。\n"
+        "经典模式下请只留一个要发送的聊天窗口（主面板不算），"
+        "或者把目标聊天窗口切到最前面再试。\n"
+        "这份坐标是旧版本标的，还没有记录界面模式；"
+        "重跑 tools\\校准坐标.bat --target qq 可以顺便记上。"
     )
 
 
@@ -199,9 +270,7 @@ def activate_qq_window() -> int:
     windows = find_qq_windows()
     if len(windows) != 1:
         raise RuntimeError(
-            f"需要恰好一个 QQ 聊天窗口，当前找到 {len(windows)} 个。"
-            "经典模式下请只留一个要发送的聊天窗口（主面板不算），"
-            "或者把目标聊天窗口切到最前面再试。"
+            _no_single_window_message(len(windows), load_offsets()["ui_mode"])
         )
     hwnd = windows[0]
     try:
@@ -317,6 +386,10 @@ __all__ = [
     "PRESS_SETTLE_SEC",
     "PROCESS_NAMES",
     "RELEASE_SETTLE_SEC",
+    "UI_MODE_AUTO",
+    "UI_MODE_CLASSIC",
+    "UI_MODE_EFFICIENCY",
+    "UI_MODE_LABELS",
     "activate_main_window",
     "activate_qq_window",
     "client_geometry",
@@ -328,6 +401,7 @@ __all__ = [
     "is_holding",
     "leave_recording_mode",
     "load_offsets",
+    "mode_for_title",
     "preflight",
     "qq_voice_control_points",
     "require_calibration",
