@@ -833,6 +833,38 @@ class SettingsDialog(ctk.CTkToplevel):
             text_color=MUTED,
         ).pack(anchor="w", padx=18, pady=(6, 0))
 
+        # Chinese pronunciation, not timbre: this is the one setting that changes
+        # how Chinese *reads* rather than which voice reads it. It sits next to
+        # 语速 for that reason, and it is deliberately separate from 音色.
+        field_label("中文语调", 17)
+        self.chinese_accent_var = tk.BooleanVar(value=owner.config.chinese_accent)
+        ctk.CTkSwitch(
+            card,
+            text="中文按声调加日语式音高重音",
+            variable=self.chinese_accent_var,
+            onvalue=True,
+            offvalue=False,
+            switch_width=42,
+            switch_height=21,
+            progress_color=PRIMARY,
+            fg_color="#C6D4CC",
+            button_color="#FFFFFF",
+            button_hover_color="#F0F5F2",
+            text_color=TEXT,
+            font=ctk.CTkFont(FONT_FAMILY, 12, "bold"),
+        ).pack(anchor="w", padx=18, pady=(0, 5))
+        ctk.CTkLabel(
+            card,
+            text="开启：把普通话声调换算成日语式的音高起伏（原来的效果，"
+            "起伏明显，但有人觉得读音怪）。\n"
+            "关闭：不加音高起伏，读音更平直。\n"
+            "只影响中文——日语、以及「中转日」译出的日文都不受这个开关影响。",
+            font=ctk.CTkFont(FONT_FAMILY, 11),
+            text_color=MUTED,
+            wraplength=430,
+            justify="left",
+        ).pack(anchor="w", padx=18)
+
         field_label("全局快捷键（快速发送浮层）", 17)
         self.hotkey_var = tk.StringVar(value=owner.config.quick_hotkey)
         hotkey_entry = ctk.CTkEntry(
@@ -1163,6 +1195,10 @@ class SettingsDialog(ctk.CTkToplevel):
         language = self.current_language()
         voice = self.current_voice()
         speed = int(round(self.speed_var.get()))
+        # Tk variables can only be read from the main thread, so this has to be
+        # resolved here alongside the rest - reading it inside work() raises
+        # "main thread is not in main loop".
+        without_accent = not self.chinese_accent_var.get()
         sample = (
             "ゆっくりしていってね！"
             if language == "ja"
@@ -1176,7 +1212,14 @@ class SettingsDialog(ctk.CTkToplevel):
                 target = CONFIG_DIR / "preview.wav"
                 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
                 reply = self.owner.engine.synth.synthesize(
-                    sample, target, lang=language, voice=voice, speed=speed
+                    sample,
+                    target,
+                    lang=language,
+                    voice=voice,
+                    speed=speed,
+                    # The preview has to honour the pending switch, otherwise it
+                    # cannot be used to decide whether to flip it.
+                    without_accent=without_accent,
                 )
                 duration = float(reply.get("durationSec") or 0.0)
                 winsound.PlaySound(
@@ -1223,6 +1266,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self.owner.config.language = self.current_language()
         self.owner.config.voice = self.current_voice()
         self.owner.config.speed = int(round(self.speed_var.get()))
+        self.owner.config.chinese_accent = bool(self.chinese_accent_var.get())
         self.owner.config.quick_hotkey = normalized
         self.owner.config.auto_switch_capture = bool(self.switch_capture_var.get())
 

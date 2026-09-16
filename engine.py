@@ -127,6 +127,13 @@ class AppConfig:
         self.language = DEFAULT_LANGUAGE
         self.voice = DEFAULT_VOICE
         self.speed = DEFAULT_SPEED
+        #: Chinese only, and the only setting that changes how Chinese *reads*
+        #: rather than how it sounds. On, the pinyin front-end derives a
+        #: *Japanese* pitch accent from each Mandarin tone, which puts the
+        #: contour where a Mandarin speaker does not expect it; off, the kana
+        #: are identical but carry no pitch marks. Default is off because on
+        #: was the original behaviour and reads noticeably worse.
+        self.chinese_accent = False
         self.geometry = DEFAULT_GEOMETRY
         self.device_name = audio.DEFAULT_DEVICE_NAME
         self.auto_activate_wechat = True
@@ -164,6 +171,7 @@ class AppConfig:
             voice = str(data.get("voice") or DEFAULT_VOICE)
             self.voice = voice if voice in VOICES else DEFAULT_VOICE
             self.speed = _clamp_speed(data.get("speed", DEFAULT_SPEED))
+            self.chinese_accent = bool(data.get("chinese_accent", False))
             self.geometry = normalized_geometry(
                 str(data.get("geometry") or DEFAULT_GEOMETRY)
             )
@@ -201,6 +209,7 @@ class AppConfig:
             "language": self.language,
             "voice": self.voice,
             "speed": self.speed,
+            "chinese_accent": self.chinese_accent,
             "geometry": self.geometry,
             "device_name": self.device_name,
             "auto_activate_wechat": self.auto_activate_wechat,
@@ -386,6 +395,9 @@ class VoiceEngine:
                 lang=synth_lang,
                 voice=config.voice,
                 speed=config.speed,
+                # Chinese only; the sidecar ignores it for ja/raw, so 中转日 and
+                # raw notation keep their own pitch accents.
+                without_accent=not config.chinese_accent,
             )
             marks["synth"] = time.monotonic()
 

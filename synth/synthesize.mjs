@@ -38,6 +38,19 @@ const MIN_SPEED = 50;
 const MAX_SPEED = 300;
 
 /**
+ * Chinese only: skip the Japanese pitch accents that the front-end derives from
+ * Mandarin tones.
+ *
+ * The pinyin -> kana step maps each syllable's tone onto a *Japanese* pitch
+ * accent, and the resulting contour falls where a Mandarin speaker does not
+ * expect it. Dropping those marks leaves the kana themselves byte-identical -
+ * only the pitch contour goes away - which reads as noticeably more natural.
+ * Japanese input is unaffected: its pitch accents come from the dictionary and
+ * are what makes it sound like Japanese at all.
+ */
+const DEFAULT_WITHOUT_ACCENT = true;
+
+/**
  * v86 memory ceiling. The emulated AquesTalk PE needs well under this; keeping
  * it modest avoids a multi-hundred-megabyte allocation per engine instance.
  */
@@ -145,10 +158,15 @@ export class YukkuriSynth {
    * Convert input text into an AquesTalk phonetic notation string.
    * @param {string} text
    * @param {"zh"|"ja"|"raw"} lang
+   * @param {{withoutAccent?: boolean}} [options] Chinese only; see
+   *   DEFAULT_WITHOUT_ACCENT. Ignored for "ja" and "raw".
    */
-  async toNotation(text, lang) {
+  async toNotation(text, lang, options = {}) {
     if (lang === "raw") return text;
-    if (lang === "zh") return textConvert(text, { withoutAccent: false });
+    if (lang === "zh") {
+      const withoutAccent = options.withoutAccent ?? DEFAULT_WITHOUT_ACCENT;
+      return textConvert(text, { withoutAccent });
+    }
     if (lang === "ja") {
       const converter = await this.ensureKanji2Koe();
       return converter.convert(text);
@@ -157,7 +175,8 @@ export class YukkuriSynth {
   }
 
   /**
-   * @param {{text:string, lang?:"zh"|"ja"|"raw", voice?:string, speed?:number}} request
+   * @param {{text:string, lang?:"zh"|"ja"|"raw", voice?:string, speed?:number,
+   *   withoutAccent?:boolean}} request
    * @returns {Promise<{wav:Buffer, notation:string, durationSec:number, voice:string, speed:number}>}
    */
   async synthesize(request) {
@@ -174,7 +193,9 @@ export class YukkuriSynth {
       throw new Error(`speed ${speed} is out of range ${MIN_SPEED}..${MAX_SPEED}`);
     }
 
-    const notation = await this.toNotation(text, lang);
+    const notation = await this.toNotation(text, lang, {
+      withoutAccent: request.withoutAccent,
+    });
     if (!notation || !notation.trim()) {
       throw new Error("conversion produced empty phonetic notation");
     }
@@ -239,6 +260,8 @@ Options:
   --lang <zh|ja|raw>  input language (default: zh)
   --voice <name>      ${VOICES.join(", ")} (default: ${DEFAULT_VOICE})
   --speed <int>       ${MIN_SPEED}..${MAX_SPEED} (default: ${DEFAULT_SPEED})
+  --without-accent    Chinese: no Japanese pitch accents (default)
+  --accent            Chinese: keep the pitch accents derived from the tones
   --out <file>        output .wav path
   --notation-only     print the phonetic notation instead of synthesizing
   --serve             stay resident; read JSON requests on stdin, reply on stdout
@@ -253,6 +276,16 @@ Reply (one JSON object per line on stdout):
   {"id":1,"ok":false,"error":"..."}
 `;
 
+/**
+ * Chinese pitch accents, from the CLI flags: `--without-accent` drops them,
+ * `--accent` keeps them, neither takes DEFAULT_WITHOUT_ACCENT.
+ */
+function accentOption(args) {
+  if (args["without-accent"]) return true;
+  if (args.accent) return false;
+  return DEFAULT_WITHOUT_ACCENT;
+}
+
 async function runOnce(args) {
   const synth = new YukkuriSynth();
   try {
@@ -260,7 +293,9 @@ async function runOnce(args) {
     if (!text) throw new Error("--text is required");
 
     if (args["notation-only"]) {
-      const notation = await synth.toNotation(text, String(args.lang ?? "zh"));
+      const notation = await synth.toNotation(text, String(args.lang ?? "zh"), {
+        withoutAccent: accentOption(args),
+      });
       process.stdout.write(`${notation}\n`);
       return 0;
     }
@@ -273,6 +308,7 @@ async function runOnce(args) {
       lang: String(args.lang ?? "zh"),
       voice: String(args.voice ?? DEFAULT_VOICE),
       speed: args.speed === undefined ? DEFAULT_SPEED : Number(args.speed),
+      withoutAccent: accentOption(args),
     });
 
     fs.mkdirSync(path.dirname(out), { recursive: true });

@@ -54,6 +54,11 @@ DEFAULT_VOICE = "f1"
 DEFAULT_LANGUAGE = "zh"
 DEFAULT_SPEED = 100
 
+#: Chinese only: skip the pitch accents the front-end derives from Mandarin
+#: tones. True matches ``synth/synthesize.mjs``'s own default, so a request that
+#: says nothing about accents behaves the same on both sides of the pipe.
+DEFAULT_WITHOUT_ACCENT = True
+
 #: ``raw`` notation is short by nature; a long Chinese sentence can take a while
 #: on a cold emulator, so the budget is generous but still bounded.
 BOOT_TIMEOUT_SEC = 90.0
@@ -219,8 +224,12 @@ class SynthClient:
         lang: str = DEFAULT_LANGUAGE,
         voice: str = DEFAULT_VOICE,
         speed: int = DEFAULT_SPEED,
+        without_accent: bool = DEFAULT_WITHOUT_ACCENT,
     ) -> dict:
         """Render ``text`` to ``out_path`` and return the sidecar's reply.
+
+        ``without_accent`` only affects Chinese input; see
+        :data:`DEFAULT_WITHOUT_ACCENT`.
 
         Retries once on a dead sidecar (as opposed to a bad request), which
         covers the common "the sidecar was killed by an OOM or a user" case.
@@ -243,6 +252,7 @@ class SynthClient:
                     "lang": lang,
                     "voice": voice,
                     "speed": int(speed),
+                    "withoutAccent": bool(without_accent),
                     "out": str(Path(out_path).resolve()),
                 }
 
