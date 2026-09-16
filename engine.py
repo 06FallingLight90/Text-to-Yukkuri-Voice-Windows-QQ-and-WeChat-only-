@@ -44,7 +44,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 CONFIG_DIR = Path.home() / ".youkuli-chaspeak"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
-DEFAULT_GEOMETRY = "500x560+40+120"
+DEFAULT_GEOMETRY = "500x620+40+120"
 
 # --- secret storage ---------------------------------------------------------
 #
@@ -334,6 +334,105 @@ class VoiceEngine:
 
     # -- the actual send ---------------------------------------------------
 
+    def _render_voice(
+        self,
+        text: str,
+        config: AppConfig,
+        wav_path: Path,
+        progress,
+    ) -> dict:
+        """Translate (when 中转日 is on) and synthesize into ``wav_path``.
+
+        Shared by :meth:`send_voice` and :meth:`preview_voice` on purpose: a
+        preview is only worth anything if the audio it plays came out of exactly
+        the code that would have been sent - including the translation, which is
+        the part most worth checking before committing to a send.
+
+        Nothing here touches a chat client, the mouse or the microphone.
+        """
+        # "中转日": translate first, then synthesize with a Japanese voice. This
+        # happens before the chat client is touched, so its latency shows up as a
+        # slower send, never as silence at the head of the message.
+        synth_text = text
+        synth_lang = config.language
+        translated = ""
+        if config.translate_zh_to_ja:
+            ready, detail = config.translation_ready()
+            if not ready:
+                raise translate.TranslationError(detail)
+            progress("正在把中文翻译成日文…")
+            result = translate.translate_to_japanese(text, config)
+            synth_text = result.text
+            translated = result.text
+            synth_lang = "ja"
+            progress("正在合成日语油库里语音…")
+        else:
+            progress("正在离线合成油库里语音…")
+
+        reply = self.synth.synthesize(
+            synth_text,
+            wav_path,
+            lang=synth_lang,
+            voice=config.voice,
+            speed=config.speed,
+            # Chinese only; the sidecar ignores it for ja/raw, so 中转日 and raw
+            # notation keep their own pitch accents.
+            without_accent=not config.chinese_accent,
+        )
+
+        duration = float(reply.get("durationSec") or 0.0)
+        notation = str(reply.get("notation") or "")
+        logging.info(
+            "合成完成：%.2f 秒，语种=%s，音色=%s，语速=%s，记号=%s",
+            duration,
+            synth_lang,
+            reply.get("voice"),
+            reply.get("speed"),
+            notation,
+        )
+        return {
+            "duration": duration,
+            "notation": notation,
+            "translated": translated,
+            "spoken": synth_text,
+            "lang": synth_lang,
+        }
+
+    def preview_voice(
+        self,
+        text: str,
+        config: AppConfig,
+        *,
+        on_progress=None,
+    ) -> dict:
+        """Render the voice a send would produce and play it on the speakers.
+
+        Deliberately lighter than :meth:`send_voice`: no chat window, no
+        calibration, no VB-CABLE, no preflight. Listening to the text needs only
+        the synthesizer, and that is most useful *before* everything else is
+        ready - the common case being 中转日, where the Japanese is something
+        nobody typed by hand and is worth hearing first.
+        """
+        def progress(message: str) -> None:
+            logging.info(message)
+            if on_progress is not None:
+                on_progress(message)
+
+        # A missing synthesis engine is worth its own message here, because this
+        # path skips preflight and would otherwise surface a boot-timeout puzzle.
+        ready, detail = sidecar_ready()
+        if not ready:
+            raise RuntimeError(detail)
+
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        # Kept on disk: winsound plays asynchronously, so the file has to outlive
+        # this call. Reused between previews, which is fine - each one rewrites it.
+        wav_path = CONFIG_DIR / "send_preview.wav"
+        rendered = self._render_voice(text, config, wav_path, progress)
+        audio.play_wav_on_speakers(wav_path)
+        logging.info("试听已播放：%.2f 秒（%s）", rendered["duration"], wav_path)
+        return rendered
+
     def send_voice(
         self,
         text: str,
@@ -370,47 +469,12 @@ class VoiceEngine:
                 temp_path = Path(handle.name)
                 wav_path = temp_path
 
-            # "中转日": translate first, then synthesize with a Japanese voice.
-            # This happens before the chat client is touched, so its latency shows
-            # up as a slower send, never as silence at the head of the message.
-            synth_text = text
-            synth_lang = config.language
-            translated = ""
-            if config.translate_zh_to_ja:
-                ready, detail = config.translation_ready()
-                if not ready:
-                    raise translate.TranslationError(detail)
-                progress("正在把中文翻译成日文…")
-                result = translate.translate_to_japanese(text, config)
-                synth_text = result.text
-                translated = result.text
-                synth_lang = "ja"
-                progress("正在合成日语油库里语音…")
-            else:
-                progress("正在离线合成油库里语音…")
-
-            reply = self.synth.synthesize(
-                synth_text,
-                wav_path,
-                lang=synth_lang,
-                voice=config.voice,
-                speed=config.speed,
-                # Chinese only; the sidecar ignores it for ja/raw, so 中转日 and
-                # raw notation keep their own pitch accents.
-                without_accent=not config.chinese_accent,
-            )
+            rendered = self._render_voice(text, config, wav_path, progress)
             marks["synth"] = time.monotonic()
 
-            duration = float(reply.get("durationSec") or 0.0)
-            notation = str(reply.get("notation") or "")
-            logging.info(
-                "合成完成：%.2f 秒，语种=%s，音色=%s，语速=%s，记号=%s",
-                duration,
-                synth_lang,
-                reply.get("voice"),
-                reply.get("speed"),
-                notation,
-            )
+            duration = rendered["duration"]
+            notation = rendered["notation"]
+            translated = rendered["translated"]
 
             if save_wav is not None:
                 return {

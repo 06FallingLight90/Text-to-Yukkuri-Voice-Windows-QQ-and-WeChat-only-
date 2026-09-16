@@ -430,6 +430,22 @@ def play_candidates(candidates: list["PreparedPlayback"]) -> "PreparedPlayback":
     raise RuntimeError(f"无法播放到 VB-CABLE。已尝试多个 Windows 音频后端：{detail}")
 
 
+def play_wav_on_speakers(path: Path) -> None:
+    """Play a WAV on the user's normal output device.
+
+    Deliberately not VB-CABLE: a preview exists so the user can *hear* it, and
+    the cable leads to a recording device rather than to the speakers.
+
+    Playback is asynchronous, so the file must stay on disk - callers must not
+    delete it right after this returns.
+    """
+    if os.name != "nt":
+        raise RuntimeError("试听播放目前只支持 Windows。")
+    import winsound
+
+    winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC)
+
+
 def default_input_name() -> str:
     """Name of the current default recording device."""
     ensure_com_initialized()
@@ -960,6 +976,7 @@ __all__ = [
     "list_output_devices",
     "play_audio_with_fallback",
     "play_candidates",
+    "play_wav_on_speakers",
     "prepare_audio",
     "prepare_output_candidates",
     "require_cable_microphone",

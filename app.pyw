@@ -1419,7 +1419,11 @@ class WidgetApp:
         self.root.title(APP_NAME)
         self.root.iconbitmap(default=str(APP_ICON_PATH))
         self.root.geometry(self.config.geometry)
-        self.root.minsize(480, 550)
+        # 600 rather than 550: the column above the pinned footer needs roughly
+        # this much before the input box starts getting squeezed, and Tk clamps
+        # even an explicitly restored geometry up to the minimum - so saved
+        # 500x560 windows from older versions are lifted automatically.
+        self.root.minsize(480, 600)
         self.root.configure(fg_color=SURFACE)
         self.busy = False
         self.preflight_ok = False
@@ -1480,6 +1484,13 @@ class WidgetApp:
     def _build_ui(self) -> None:
         outer = ctk.CTkFrame(self.root, fg_color="transparent")
         outer.pack(fill="both", expand=True, padx=20, pady=(18, 16))
+
+        # Packed before anything else and anchored to the bottom, so the buttons
+        # can never be pushed out of the window by whatever sits above them - the
+        # same trick, and the same reason, as the settings dialog's action row.
+        # Everything above gives up height first; see the editor's pack() below.
+        footer = ctk.CTkFrame(outer, fg_color="transparent")
+        footer.pack(side="bottom", fill="x", pady=(12, 0))
 
         header = ctk.CTkFrame(outer, fg_color="transparent")
         header.pack(fill="x")
@@ -1614,7 +1625,10 @@ class WidgetApp:
             border_width=1,
             border_color=PRIMARY,
         )
-        editor.pack(fill="both", expand=True)
+        # Deliberately not packed here: pack clips from the end of the packing
+        # order, and this frame is the one element that can afford to give up
+        # height (its text box scrolls). It is packed after 中转日 instead, so a
+        # short window shrinks the input box rather than hiding a control.
         self.text = ctk.CTkTextbox(
             editor,
             height=150,
@@ -1706,8 +1720,33 @@ class WidgetApp:
         self.translate_hint.pack(side="left", fill="x", expand=True, padx=(0, 12), pady=9)
         self.update_translate_hint()
 
-        actions = ctk.CTkFrame(outer, fg_color="transparent")
-        actions.pack(fill="x", pady=(14, 0))
+        # Last in the top group on purpose - see the comment where `editor` is
+        # created. This is the widget that yields height first.
+        editor.pack(fill="both", expand=True, pady=(12, 0))
+
+        # Preview sits directly above 发送语音, so "listen, then send" reads top to
+        # bottom. It stays enabled even when sending would be refused: checking
+        # what is about to be said needs only the synthesizer.
+        preview_row = ctk.CTkFrame(footer, fg_color="transparent")
+        preview_row.pack(fill="x")
+        self.preview_button = ctk.CTkButton(
+            preview_row,
+            text="▶  试听本次语音",
+            height=42,
+            corner_radius=14,
+            fg_color=CARD,
+            hover_color="#E9EFEB",
+            border_width=1,
+            border_color=BORDER,
+            text_color=PRIMARY,
+            text_color_disabled="#B7C0BA",
+            font=ctk.CTkFont(FONT_FAMILY, 13, "bold"),
+            command=self.start_preview,
+        )
+        self.preview_button.pack(fill="x")
+
+        actions = ctk.CTkFrame(footer, fg_color="transparent")
+        actions.pack(fill="x", pady=(8, 0))
         self.clear_button = ctk.CTkButton(
             actions,
             text="清空",
@@ -1744,12 +1783,12 @@ class WidgetApp:
         self.send_button.pack(side="right", fill="x", expand=True, padx=(12, 0))
 
         self.target_hint = ctk.CTkLabel(
-            outer,
+            footer,
             text="",
             text_color=MUTED,
             font=ctk.CTkFont(FONT_FAMILY, 10),
         )
-        self.target_hint.pack(anchor="w", pady=(11, 0), padx=2)
+        self.target_hint.pack(anchor="w", pady=(10, 0), padx=2)
         self.update_target_hint()
         self.update_send_button()
 
@@ -1850,6 +1889,13 @@ class WidgetApp:
             fg_color=ACTION if state == "normal" else "#A9CEBA",
             hover_color=ACTION_HOVER if state == "normal" else "#A9CEBA",
         )
+        # Preview deliberately ignores preflight_ok: it only needs the
+        # synthesizer, and hearing the text is most useful exactly when the chat
+        # window or the cable is not ready yet.
+        if hasattr(self, "preview_button"):
+            self.preview_button.configure(
+                state="normal" if has_text and not self.busy else "disabled"
+            )
 
     def set_status(self, text: str, *, error: bool = False) -> None:
         self.status_var.set(text)
@@ -1979,6 +2025,73 @@ class WidgetApp:
             self.start_send()
         return "break"
 
+    def start_preview(self) -> None:
+        """Play the voice this text would produce, without sending anything.
+
+        No preflight on purpose - see update_send_button().
+        """
+        text = self.text.get("1.0", "end-1c").strip()
+        if self.busy or not text:
+            return
+        self.busy = True
+        self.text.configure(state="disabled")
+        self.clear_button.configure(state="disabled")
+        self.preview_button.configure(state="disabled", text="合成中…")
+        self.send_button.configure(state="disabled")
+        self.quick_window.set_busy(True)
+        self.set_status("正在合成试听语音…")
+        threading.Thread(target=self._preview_worker, args=(text,), daemon=True).start()
+
+    def _preview_worker(self, text: str) -> None:
+        """Synthesize and play a preview on a worker thread.
+
+        Goes through engine.preview_voice, which shares its translation and
+        synthesis with the send path - otherwise the preview could sound
+        different from what actually gets sent.
+        """
+        try:
+            logging.info("开始试听，字符数=%d", len(text))
+            result = self.engine.preview_voice(
+                text, self.config, on_progress=self._post_progress
+            )
+            duration = float(result.get("duration") or 0.0)
+            translated = str(result.get("translated") or "")
+            self.root.after(0, lambda: self._preview_finished(duration, translated))
+        except translate.TranslationError as error:
+            logging.warning("试听：翻译失败：%s", error)
+            self.root.after(
+                0,
+                lambda value=str(error): self._preview_failed(
+                    "翻译失败",
+                    value,
+                    "试听不会发送任何消息。请检查「中转日」的翻译设置，"
+                    "或先关掉它改用中文油库里。",
+                ),
+            )
+        except Exception as error:
+            logging.exception("试听失败")
+            self.root.after(
+                0, lambda value=str(error): self._preview_failed("试听失败", value)
+            )
+
+    def _preview_finished(self, duration: float, translated: str) -> None:
+        self._restore_controls()
+        if translated:
+            # The user typed Chinese and heard Japanese; show what was spoken.
+            spoken = translated if len(translated) <= 30 else translated[:30] + "…"
+            self.set_status(
+                f"已试听 {duration:.1f} 秒（日语译文：{spoken}） · 内容对了再点「发送语音」"
+            )
+        else:
+            self.set_status(f"已试听 {duration:.1f} 秒 · 内容对了再点「发送语音」")
+
+    def _preview_failed(self, title: str, detail: str, hint: str = "") -> None:
+        self._restore_controls()
+        self.set_status(f"{title}：{detail}", error=True)
+        self.show_main_window()
+        body = f"{detail}\n\n{hint}".strip() if hint else detail
+        messagebox.showerror(title, body, parent=self.root)
+
     def start_send(self) -> None:
         text = self.text.get("1.0", "end-1c").strip()
         if text:
@@ -2084,6 +2197,7 @@ class WidgetApp:
         self.busy = False
         self.text.configure(state="normal")
         self.clear_button.configure(state="normal")
+        self.preview_button.configure(text="▶  试听本次语音")
         self.send_button.configure(text="发送语音", image=self._mic_icon)
         self.update_send_button()
         self.quick_window.set_busy(False)
