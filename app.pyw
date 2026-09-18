@@ -2330,7 +2330,8 @@ class WidgetApp:
         if messagebox.askyesno(
             f"需要重新标定{label}坐标",
             f"{detail}\n\n现在打开标定工具吗？\n"
-            "（会新开一个窗口，按提示把鼠标放到各个按钮上即可）",
+            "（它和设置页里的「重新标定」是同一个工具；会新开一个窗口，"
+            "按提示把鼠标放到各个按钮上即可）",
             parent=parent,
         ):
             launch_calibration(self.config.target)

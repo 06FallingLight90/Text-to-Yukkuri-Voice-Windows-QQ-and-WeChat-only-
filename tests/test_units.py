@@ -646,9 +646,14 @@ class RecordingStateTests(unittest.TestCase):
                 wechat.enter_voice_mode(1)
 
         message = str(caught.exception)
-        self.assertIn("输入框", message)  # the draft case a user actually hit
-        self.assertIn("校准坐标.bat", message)
+        # The causes a user can act on, and the route the app wants them to take.
+        self.assertIn("麦克风", message)
+        self.assertIn("设置", message)
+        self.assertIn("重新标定", message)
         self.assertIn("check_default_devices", message)
+        # Typing in WeChat's input box does not stop a voice message, so the
+        # message must not send anyone off to clear it.
+        self.assertNotIn("输入框", message)
         self.assertFalse(wechat._recording_started)
         self.assertEqual(len(clicked), 1)  # it did click the voice button
 

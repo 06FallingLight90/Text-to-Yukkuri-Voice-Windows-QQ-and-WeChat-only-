@@ -144,7 +144,7 @@ def require_calibration() -> None:
     if not OFFSETS_FILE.is_file():
         raise CalibrationError(
             "QQ 还没有标定过坐标。\n"
-            "请双击 tools\\校准坐标.bat --target qq 标定「按住说话」按钮。"
+            "请打开设置（「发送到」选中 QQ），点「重新标定」标定「按住说话」按钮。"
         )
 
 
@@ -270,7 +270,7 @@ def _no_single_window_message(count: int, mode: str) -> str:
         "经典模式下请只留一个要发送的聊天窗口（主面板不算），"
         "或者把目标聊天窗口切到最前面再试。\n"
         "这份坐标是旧版本标的，还没有记录界面模式；"
-        "重跑 tools\\校准坐标.bat --target qq 可以顺便记上。"
+        "在设置里点一次「重新标定」就能顺便记上。"
     )
 
 
