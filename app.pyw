@@ -24,6 +24,7 @@ from resvg import render, usvg
 
 import audio
 import engine
+import help_window
 import targets
 import translate
 import windowing
@@ -38,6 +39,22 @@ from hotkeys import (
     parse_hotkey,
 )
 from synth_client import LANGUAGE_LABELS, VOICE_LABELS
+from theme import (
+    ACTION,
+    ACTION_HOVER,
+    BORDER,
+    CARD,
+    ERROR,
+    ERROR_SURFACE,
+    FONT_FAMILY,
+    MUTED,
+    PRIMARY,
+    PRIMARY_HOVER,
+    SUCCESS,
+    SURFACE,
+    TEXT,
+    TONAL,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CALIBRATE_SCRIPT = PROJECT_ROOT / "tools" / "calibrate_target.py"
@@ -107,20 +124,8 @@ ICON_DIR = ASSET_DIR / "material_symbols"
 APP_ICON_PATH = ASSET_DIR / "app-icon.ico"
 DEFAULT_GEOMETRY = engine.DEFAULT_GEOMETRY
 
-SURFACE = "#F6FAF7"
-CARD = "#FFFFFF"
-TEXT = "#17221C"
-MUTED = "#6F7C74"
-PRIMARY = "#0A7A52"
-PRIMARY_HOVER = "#086844"
-ACTION = "#078A59"
-ACTION_HOVER = "#06764C"
-SUCCESS = "#12B76A"
-BORDER = "#DDE7E1"
-TONAL = "#EAF6EF"
-ERROR = "#B84235"
-ERROR_SURFACE = "#FFF0ED"
-FONT_FAMILY = "Microsoft YaHei UI"
+# The window palette lives in theme.py, because the help window needs the same
+# colours and importing app.pyw from there would be a circle.
 
 WM_APP = 0x8000
 WM_CLOSE = 0x0010
@@ -1508,6 +1513,9 @@ class WidgetApp:
         self._quitting = False
         self._system_actions: queue.SimpleQueue[str] = queue.SimpleQueue()
         self.tray: WinTrayController | None = None
+        #: The troubleshooting page, so a second click focuses it instead of
+        #: stacking another copy.
+        self.help_window: help_window.HelpWindow | None = None
         self._waveform_icon = svg_icon("graphic_eq", "#FFFFFF", 24)
         self._settings_icon = svg_icon("settings", "#34413A", 22)
         self._mic_icon = svg_icon("mic", "#FFFFFF", 22)
@@ -1859,13 +1867,26 @@ class WidgetApp:
         )
         self.send_button.pack(side="right", fill="x", expand=True, padx=(12, 0))
 
+        bottom_row = ctk.CTkFrame(footer, fg_color="transparent")
+        bottom_row.pack(fill="x", pady=(10, 0))
         self.target_hint = ctk.CTkLabel(
-            footer,
+            bottom_row,
             text="",
             text_color=MUTED,
             font=ctk.CTkFont(FONT_FAMILY, 10),
         )
-        self.target_hint.pack(anchor="w", pady=(10, 0), padx=2)
+        self.target_hint.pack(side="left", padx=2)
+        # Underlined rather than a button, so it reads as a link at the bottom of
+        # the page instead of competing with 「发送语音」.
+        self.help_link = ctk.CTkLabel(
+            bottom_row,
+            text="帮助",
+            text_color=PRIMARY,
+            cursor="hand2",
+            font=ctk.CTkFont(FONT_FAMILY, 11, underline=True),
+        )
+        self.help_link.pack(side="right", padx=2)
+        self.help_link.bind("<Button-1>", self.open_help)
         self.update_target_hint()
         self.update_send_button()
 
@@ -1884,6 +1905,21 @@ class WidgetApp:
     def open_settings(self) -> None:
         if not self.busy:
             SettingsDialog(self)
+
+    def open_help(self, _event: tk.Event | None = None) -> None:
+        """Show the troubleshooting page, focusing it if it is already open.
+
+        Deliberately not gated on ``self.busy``: a plain-text page cannot disturb
+        a send, and the moment a user needs it is usually right after something
+        failed.
+        """
+        window = self.help_window
+        if window is not None and window.winfo_exists():
+            window.deiconify()
+            window.lift()
+            window.focus()
+            return
+        self.help_window = help_window.HelpWindow(self)
 
     def toggle_pin(self) -> None:
         """Keep the main window above other applications, or stop doing that.

@@ -27,6 +27,7 @@ sys.path.insert(0, str(ROOT))
 
 import audio  # noqa: E402
 import engine  # noqa: E402
+import help_window  # noqa: E402
 import hotkeys  # noqa: E402
 import translate  # noqa: E402
 import wechat  # noqa: E402
@@ -498,6 +499,62 @@ class WechatWindowSearchTests(unittest.TestCase):
 
     def test_nothing_visible_gives_nothing(self) -> None:
         self.assertEqual(self.search([]), [])
+
+
+class HelpPageTests(unittest.TestCase):
+    """帮助页的内容是数据，所以可以直接断言它是否自洽、是否读得下去。"""
+
+    def cells(self):
+        return [
+            cell
+            for table in help_window.SECTIONS
+            for row in table.rows
+            for cell in row
+        ]
+
+    def test_every_row_fills_every_column(self) -> None:
+        for table in help_window.SECTIONS:
+            with self.subTest(table=table.title):
+                self.assertTrue(table.rows)
+                for row in table.rows:
+                    self.assertEqual(len(row), len(table.headers))
+                    for cell in row:
+                        self.assertTrue(cell.strip())
+
+    def test_tables_are_two_or_three_columns(self) -> None:
+        for table in help_window.SECTIONS:
+            with self.subTest(table=table.title):
+                self.assertIn(len(table.headers), (2, 3))
+                self.assertEqual(len(table.weights), len(table.headers))
+
+    def test_cells_stay_short_enough_to_scan(self) -> None:
+        for cell in self.cells():
+            with self.subTest(cell=cell[:18]):
+                self.assertLess(len(cell), 240)
+
+    def test_the_greyed_voice_button_is_only_described_as_wechat(self) -> None:
+        # 用户实测：语音键变灰、转圈只有微信会这样，QQ 不会被这样拦 —— 所以
+        # 这条不能出现在通用表里。
+        general = next(t for t in help_window.SECTIONS if t.title.startswith("一、"))
+        for row in general.rows:
+            with self.subTest(row=row[0][:18]):
+                self.assertNotIn("变灰", row[0])
+
+    def test_stars_mark_the_rows_worth_reading_first(self) -> None:
+        starred = [
+            row[0]
+            for table in help_window.SECTIONS
+            for row in table.rows
+            if row[0].startswith(help_window.STAR)
+        ]
+        self.assertGreaterEqual(len(starred), 4)
+
+    def test_the_routes_users_are_sent_to_are_documented(self) -> None:
+        text = "\n".join(self.cells())
+        self.assertIn("widget.log", text)          # 反馈要带的日志
+        self.assertIn("重新标定", text)             # 标定入口
+        self.assertIn("check_default_devices", text)  # 设备自查
+        self.assertIn("list_windows", text)        # 窗口自查
 
 
 class RecordingStateTests(unittest.TestCase):
