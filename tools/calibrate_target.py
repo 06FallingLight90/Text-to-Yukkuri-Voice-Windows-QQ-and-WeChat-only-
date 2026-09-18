@@ -238,6 +238,15 @@ def prepare_window(module) -> tuple[int, tuple[int, int, int, int, int, int], st
             "QQ 的两种界面模式都可以标定（效率模式是主面板，经典模式是独立聊天窗口），"
             "但窗口必须可见。"
         )
+        # The three hints above are guesses. This is the measured answer, and it
+        # is the whole point of the message: say which condition actually failed.
+        print("\n实测原因：")
+        print(
+            "  "
+            + windowing.explain_window_search(
+                module.PROCESS_NAMES, getattr(module, "WINDOW_TITLE", None)
+            ).replace("\n", "\n  ")
+        )
         return None
 
     if len(candidates) == 1:

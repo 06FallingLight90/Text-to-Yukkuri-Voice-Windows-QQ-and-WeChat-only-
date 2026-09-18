@@ -1489,6 +1489,9 @@ class WidgetApp:
         self.root.configure(fg_color=SURFACE)
         self.busy = False
         self.preflight_ok = False
+        #: Last pre-flight failure that was written to the log, so the periodic
+        #: refresh does not repeat the same line every few seconds.
+        self._last_preflight_detail = ""
         self.active_send_source: str | None = None
         self._quitting = False
         self._system_actions: queue.SimpleQueue[str] = queue.SimpleQueue()
@@ -2016,6 +2019,12 @@ class WidgetApp:
             return
         ok, detail = run_preflight(self.engine, self.config)
         self.preflight_ok = ok
+        # Logged the first time a given reason appears: this runs every few
+        # seconds, and a failed pre-flight used to reach the status line only,
+        # which left bug reports with nothing to go on.
+        if not ok and detail != self._last_preflight_detail:
+            logging.warning("预检未通过：%s", detail)
+        self._last_preflight_detail = "" if ok else detail
         self.set_status(detail, error=not ok)
         self.update_send_button()
 

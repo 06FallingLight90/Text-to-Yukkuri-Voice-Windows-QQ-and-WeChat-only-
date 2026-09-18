@@ -259,6 +259,88 @@ def force_client_size(hwnd: int, size: tuple[int, int]) -> tuple[int, int]:
     return client_width, client_height
 
 
+def explain_window_search(process_names: set[str], title: str | None) -> str:
+    """Why a search for a client's main window came up empty.
+
+    The application can only say "请打开微信并点开要发送的聊天窗口", which is no
+    help at all when the window is right there on screen - that report has come
+    in twice now. This walks the same enumeration and names the condition that
+    failed, including the one the search cannot report because it deliberately
+    ignores it: a window whose process name could not be read at all (a client
+    running elevated, or an antivirus blocking the query) is skipped silently.
+
+    Read-only, and cheap enough to call when something already went wrong.
+    """
+    wanted = {name.casefold() for name in process_names}
+    theirs: list[tuple[int, str, bool]] = []
+    unreadable: list[str] = []
+    failed = 0
+
+    @_WNDENUMPROC
+    def enum_proc(hwnd, _lparam):
+        nonlocal failed
+        length = user32.GetWindowTextLengthW(hwnd)
+        buffer = ctypes.create_unicode_buffer(max(length, 0) + 1)
+        user32.GetWindowTextW(hwnd, buffer, max(length, 0) + 1)
+        window_title = buffer.value
+        # Cheap pre-filter: a client's main window always has a title, so a
+        # window without one cannot be it, and skipping them keeps this from
+        # touching every process on the desktop.
+        if length <= 0:
+            return True
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        try:
+            name = psutil.Process(pid.value).name()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            failed += 1
+            if len(unreadable) < 6:
+                unreadable.append(window_title)
+            return True
+        if name.casefold() in wanted:
+            theirs.append((int(hwnd), window_title, bool(user32.IsWindowVisible(hwnd))))
+        return True
+
+    user32.EnumWindows(enum_proc, 0)
+
+    names = "/".join(sorted(process_names))
+    if not theirs:
+        if failed:
+            return (
+                f"没有找到 {names} 的窗口，但有 {failed} 个窗口的进程名读不到"
+                f"（标题如 {unreadable}）。这通常说明客户端以管理员身份运行、"
+                "或有安全软件拦截进程查询——应用会静默跳过这些窗口。"
+                "把客户端和本程序设成同样的权限（都不管理员，或都管理员）再试。"
+            )
+        return f"没有找到 {names} 的顶层窗口：客户端可能没在运行，或者进程名不在名单里。"
+
+    titles = [title_of_window for _hwnd, title_of_window, _shown in theirs]
+    visible = {hwnd for hwnd, _title, shown in theirs if shown}
+    if title is None:
+        return (
+            f"找到 {len(theirs)} 个 {names} 的窗口（{len(visible)} 个可见），"
+            f"标题：{titles}。"
+        )
+
+    matching = [hwnd for hwnd, window_title, _shown in theirs if window_title == title]
+    if not matching:
+        return (
+            f"找到 {len(theirs)} 个 {names} 的窗口，但标题都不是 {title!r}：{titles}。"
+            f"应用只认标题恰好是 {title!r} 的那个（主窗口）；你看到的可能是独立聊天窗口，"
+            "或者这个版本的标题变了。"
+        )
+    if not any(hwnd in visible for hwnd in matching):
+        return (
+            f"标题是 {title!r} 的窗口存在，但当前不可见（被收进托盘或隐藏了）。"
+            "微信 4.x 的“最小化”会把窗口隐藏起来，不是普通的最小化——"
+            "从任务栏或托盘点开一次让它真正显示出来。"
+        )
+    return (
+        f"标题是 {title!r} 的窗口可见，应用本应能找到它（找到 {len(matching)} 个）。"
+        "如果应用仍提示找不到，确认跑应用和跑标定的用户是同一个。"
+    )
+
+
 # --- control offsets --------------------------------------------------------
 
 
@@ -392,6 +474,7 @@ __all__ = [
     "activate_window",
     "capture_region",
     "changed_fraction",
+    "explain_window_search",
     "client_capture_box",
     "client_geometry",
     "find_windows",

@@ -31,6 +31,7 @@ import sounddevice as sd
 import audio
 import targets
 import translate
+import windowing
 from synth_client import (
     DEFAULT_LANGUAGE,
     DEFAULT_SPEED,
@@ -300,6 +301,9 @@ class VoiceEngine:
 
     def __init__(self) -> None:
         self.synth = SynthClient()
+        #: Last "cannot find the client window" explanation that was logged, so
+        #: the periodic pre-flight does not repeat it every few seconds.
+        self._last_window_reason = ""
         # A send that died between swapping the default recording device and
         # restoring it leaves the whole machine recording from the cable, which
         # nothing reveals until some other app needs the microphone. Clean that
@@ -330,8 +334,31 @@ class VoiceEngine:
         except Exception as error:
             return False, str(error)
 
-        if len(config.target_module().find_main_windows()) != 1:
-            return False, f"请打开{config.target_label()}并点开要发送的聊天窗口"
+        module = config.target_module()
+        windows = module.find_main_windows()
+        if len(windows) != 1:
+            # Worth a log line, and worth saying *which* of the two it is: this
+            # check used to report "请打开微信…" for both zero windows and two of
+            # them, and nothing was written to the log at all, so a user whose
+            # WeChat was plainly on screen had nothing to go on.
+            reason = windowing.explain_window_search(
+                module.PROCESS_NAMES, getattr(module, "WINDOW_TITLE", None)
+            )
+            if reason != self._last_window_reason:
+                self._last_window_reason = reason
+                logging.warning(
+                    "找不到%s主窗口（找到 %d 个）：%s",
+                    config.target_label(),
+                    len(windows),
+                    reason,
+                )
+            if not windows:
+                return False, f"没有找到{config.target_label()}窗口：请打开{config.target_label()}并点开要发送的聊天窗口"
+            return False, (
+                f"找到 {len(windows)} 个{config.target_label()}窗口，"
+                "请只留一个要发送的聊天窗口"
+            )
+        self._last_window_reason = ""
 
         if config.auto_switch_capture:
             # The app makes the cable the default itself, so the question is not
