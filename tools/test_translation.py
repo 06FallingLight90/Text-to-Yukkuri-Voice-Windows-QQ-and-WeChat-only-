@@ -62,7 +62,26 @@ class MockHandler(BaseHTTPRequestHandler):
         # OpenAI-compatible
         captured["openai_path"] = self.path
         captured["openai_auth"] = self.headers.get("Authorization")
-        captured["openai_body"] = json.loads(raw)
+        body = json.loads(raw)
+        captured["openai_body"] = body
+        messages = body.get("messages") or [{}]
+        system = messages[0].get("content", "")
+        if system == translate.ENGLISH_READING_PROMPT:
+            # 可读英文. The reply is deliberately numbered, the way a chat model
+            # formats a list even when told not to, so the parser is tested too.
+            captured["english_request"] = messages[1].get("content", "")
+            readings = {
+                "hello": "ハロー",
+                "iphone": "アイフォーン",
+                "chatgpt": "チャットジーピーティー",
+            }
+            words = [w for w in captured["english_request"].splitlines() if w.strip()]
+            reply = "\n".join(
+                f"{index + 1}. {readings.get(word.strip().casefold(), 'ワカラナイ')}"
+                for index, word in enumerate(words)
+            )
+            self._send({"choices": [{"message": {"role": "assistant", "content": reply}}]})
+            return
         self._send(
             {
                 "choices": [
@@ -131,6 +150,76 @@ def main() -> int:
         print(f"  translation_ready : {ready} {detail}")
         outcome = translate.translate_to_japanese("你好", config)
         print(f"  translate_to_japanese -> {outcome.text!r} via {outcome.provider}")
+
+        print("\n=== 可读英文（大模型：一次请求转写全部片段） ===")
+        config.read_english = True
+        config.translate_provider = "openai"
+        translate._ENGLISH_CACHE.clear()
+        rewritten, pairs = translate.read_english(
+            "我喜欢 Hello 和 iPhone，还有 ChatGPT。", config
+        )
+        print(f"  request text   : {captured.get('english_request')!r}")
+        print(f"  rewritten      : {rewritten!r}")
+        print(f"  pairs          : {pairs}")
+        if captured.get("english_request") != "Hello\niPhone\nChatGPT":
+            failures += 1
+            print("  FAIL: segments were not batched into one request")
+        if rewritten != "我喜欢 ハロー 和 アイフォーン，还有 チャットジーピーティー。":
+            failures += 1
+            print("  FAIL: English was not replaced (numbering left in?)")
+        if [word for word, _ in pairs] != ["Hello", "iPhone", "ChatGPT"]:
+            failures += 1
+            print("  FAIL: the reported pairs do not match the segments")
+
+        # The second message must not pay for the same words again.
+        captured.pop("english_request", None)
+        again, _ = translate.read_english("Hello 又来了", config)
+        print(f"  second message : {again!r}  (cached={captured.get('english_request') is None})")
+        if captured.get("english_request") is not None:
+            failures += 1
+            print("  FAIL: a cached word was requested again")
+        if "ハロー" not in again:
+            failures += 1
+            print("  FAIL: the cached reading was not used")
+
+        print("\n=== 可读英文（有道：给不出读音，必须明确拒绝） ===")
+        config.translate_provider = "youdao"
+        config.youdao_app_key = "test-key"
+        config.youdao_app_secret = "test-secret"
+        if translate.can_read_english("youdao"):
+            failures += 1
+            print("  FAIL: 有道 must not count as able to read English")
+        try:
+            translate.english_to_kana(["Hello"], config)
+            failures += 1
+            print("  FAIL: 有道 was allowed to read English")
+        except translate.TranslationError as error:
+            print(f"  refused        : {error}")
+
+        print("\n=== 可读英文（接口不配合时必须报错，不能静默吞掉英文） ===")
+        # Readings are cached per process, and earlier sections warmed this one;
+        # the point here is what happens to a fresh request.
+        translate._ENGLISH_CACHE.clear()
+
+        class EchoHandler(MockHandler):
+            def do_POST(self):
+                self._send({"choices": [{"message": {"content": "Hello"}}]})
+
+        echo_server = ThreadingHTTPServer(("127.0.0.1", 0), EchoHandler)
+        threading.Thread(target=echo_server.serve_forever, daemon=True).start()
+        try:
+            echo_config = engine.AppConfig()
+            echo_config.translate_provider = "openai"
+            echo_config.openai_base_url = f"http://127.0.0.1:{echo_server.server_address[1]}"
+            echo_config.openai_model = "mock-model"
+            try:
+                translate.read_english("Hello", echo_config)
+                failures += 1
+                print("  FAIL: an echoed reply was accepted as a reading")
+            except translate.TranslationError as error:
+                print(f"  echoed reply -> {error}")
+        finally:
+            echo_server.shutdown()
 
         print("\n=== error handling ===")
         # A Youdao error code must surface with a readable message.

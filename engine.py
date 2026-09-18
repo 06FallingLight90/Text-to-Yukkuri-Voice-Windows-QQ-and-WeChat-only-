@@ -153,6 +153,12 @@ class AppConfig:
         #: it with a Japanese yukkuri voice. Purely a per-send switch; the
         #: configured language is untouched so turning it off restores it.
         self.translate_zh_to_ja = False
+        #: "可读英文": replace the English runs inside the text with a Japanese
+        #: reading before synthesizing. Off by default because it is the only
+        #: reading option that sends part of what the user typed to a server,
+        #: and because the Japanese front-end already reads many English words
+        #: on its own (badly for anything outside its dictionary).
+        self.read_english = False
         self.translate_provider = "off"
         self.youdao_app_key = ""
         self.youdao_app_secret = ""
@@ -183,6 +189,7 @@ class AppConfig:
             self.quick_hotkey = str(data.get("quick_hotkey") or "").strip()
 
             self.translate_zh_to_ja = bool(data.get("translate_zh_to_ja", False))
+            self.read_english = bool(data.get("read_english", False))
             provider = str(data.get("translate_provider") or "off")
             self.translate_provider = (
                 provider if provider in translate.PROVIDERS else "off"
@@ -217,6 +224,7 @@ class AppConfig:
             "target": self.target,
             "quick_hotkey": self.quick_hotkey,
             "translate_zh_to_ja": self.translate_zh_to_ja,
+            "read_english": self.read_english,
             "translate_provider": self.translate_provider,
             "youdao_app_key": self.youdao_app_key,
             # Secrets never touch the file in the clear.
@@ -243,7 +251,14 @@ class AppConfig:
         return targets.label(self.target)
 
     def translation_ready(self) -> tuple[bool, str]:
-        """Whether the configured translation provider has what it needs."""
+        """Whether the configured translation provider has what it needs.
+
+        Only 中转日 is checked here, because only it needs a translator for
+        *every* message. 可读英文 is text-dependent - a message with no English
+        needs nothing, and one whose English can only be spelled out needs
+        nothing either - so it is judged per message by :meth:`english_plan`,
+        which is what the GUI disables 发送语音 on.
+        """
         if not self.translate_zh_to_ja:
             return True, ""
         provider = self.translate_provider
@@ -334,6 +349,56 @@ class VoiceEngine:
 
     # -- the actual send ---------------------------------------------------
 
+    @staticmethod
+    def english_plan(config: AppConfig, text: str) -> str:
+        """How ``text``'s English will be handled: ``""``, ``read``, ``spelled``, ``blocked``.
+
+        The distinction is what the configured provider can do, not what the user
+        asked for:
+
+        - ``read``     the provider can be asked for a reading, so the English
+                       becomes kana before synthesis;
+        - ``spelled``  a translation-only provider, so nothing can be done about
+                       the English and the Japanese front-end will read it letter
+                       by letter - still sendable, but worth warning about;
+        - ``blocked``  the same, except the *Chinese* front-end cannot pronounce
+                       Latin letters at all, so the message would silently lose
+                       them. Refusing is the honest answer.
+
+        The language that matters is the one synthesis will actually use, so with
+        中转日 on this is always the Japanese front-end (which does at least
+        attempt Latin letters) and nothing is ever blocked.
+        """
+        language = config.effective_language()
+        if not config.read_english or language not in ("zh", "ja"):
+            return ""
+        if not translate.find_english_segments(text):
+            return ""
+        if translate.can_read_english(config.translate_provider):
+            return "read"
+        if language == "zh":
+            return "blocked"
+        return "spelled"
+
+    @staticmethod
+    def english_blocked_message(config: AppConfig) -> str:
+        """Why a message with English cannot be sent, in the user's terms."""
+        if config.translate_provider in ("off", ""):
+            current = "现在还没有选择翻译方式"
+        else:
+            provider = translate.PROVIDER_LABELS.get(
+                config.translate_provider, config.translate_provider
+            )
+            current = f"现在选的翻译方式是「{provider}」，它只能翻译意思、给不了英文读音"
+        return (
+            "输入里有英文，而中文油库里读不了英文（拉丁字母会被直接丢掉）。\n"
+            f"{current}，所以没法把英文补成假名。\n\n"
+            "三个办法任选一个：\n"
+            "· 把设置里的「翻译方式」换成大模型 API（只有它能给出英文读音）；\n"
+            "· 把输入里的英文删掉或改成中文；\n"
+            "· 关掉「可读英文」，自己接受英文不发声。"
+        )
+
     def _render_voice(
         self,
         text: str,
@@ -350,18 +415,48 @@ class VoiceEngine:
 
         Nothing here touches a chat client, the mouse or the microphone.
         """
-        # "中转日": translate first, then synthesize with a Japanese voice. This
-        # happens before the chat client is touched, so its latency shows up as a
-        # slower send, never as silence at the head of the message.
+        # "可读英文" runs first: the synthesis front-ends ignore Latin letters
+        # outright, so English has to become kana before anything else looks at
+        # the text. Doing it before 中转日 also means a translator that leaves an
+        # English word alone still gets a readable katakana word to work with,
+        # instead of the Japanese front-end spelling it out letter by letter.
         synth_text = text
         synth_lang = config.language
         translated = ""
+        english_pairs: list[tuple[str, str]] = []
+        plan = self.english_plan(config, text)
+        if plan == "blocked":
+            # Refuse before anything else happens: the alternative is a voice
+            # message that quietly drops the words the user typed in English.
+            raise translate.TranslationError(self.english_blocked_message(config))
+        if plan == "read":
+            # No readiness check here: this branch needs the model, and
+            # translate_openai() says precisely what is missing if it is not
+            # configured.
+            segments = translate.find_english_segments(text)
+            progress(f"正在把 {len(segments)} 处英文读成日文假名…")
+            synth_text, english_pairs = translate.read_english(text, config)
+            if english_pairs:
+                logging.info(
+                    "英文已读作：%s",
+                    "、".join(f"{word}→{kana}" for word, kana in english_pairs),
+                )
+        elif plan == "spelled":
+            # The message still goes out; the user is told what the voice is
+            # about to do with those words rather than being left to wonder.
+            words = "、".join(translate.find_english_segments(text))
+            logging.warning("英文无法给出读音，将被逐字母念出：%s", words)
+            progress(f"英文（{words}）没有读音可用，会被逐字母念出")
+
+        # "中转日": translate first, then synthesize with a Japanese voice. This
+        # happens before the chat client is touched, so its latency shows up as a
+        # slower send, never as silence at the head of the message.
         if config.translate_zh_to_ja:
             ready, detail = config.translation_ready()
             if not ready:
                 raise translate.TranslationError(detail)
             progress("正在把中文翻译成日文…")
-            result = translate.translate_to_japanese(text, config)
+            result = translate.translate_to_japanese(synth_text, config)
             synth_text = result.text
             translated = result.text
             synth_lang = "ja"
@@ -394,6 +489,7 @@ class VoiceEngine:
             "duration": duration,
             "notation": notation,
             "translated": translated,
+            "english": [(word, kana) for word, kana in english_pairs],
             "spoken": synth_text,
             "lang": synth_lang,
         }
@@ -575,6 +671,7 @@ class VoiceEngine:
                 "duration": played.duration,
                 "notation": notation,
                 "translated": translated,
+                "english": rendered.get("english") or [],
                 "saved": None,
             }
         finally:

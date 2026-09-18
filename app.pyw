@@ -664,6 +664,16 @@ def run_preflight(engine_instance: "engine.VoiceEngine", config: AppConfig) -> t
     return engine_instance.preflight(config)
 
 
+def _english_note(pairs) -> str:
+    """One short phrase describing the English that was read out, or ``""``."""
+    if not pairs:
+        return ""
+    shown = "、".join(f"{word}→{kana}" for word, kana in list(pairs)[:3])
+    if len(pairs) > 3:
+        shown += f" 等 {len(pairs)} 处"
+    return f"英文读作：{shown}"
+
+
 class SettingsDialog(ctk.CTkToplevel):
     def __init__(self, owner: "WidgetApp") -> None:
         super().__init__(owner.root)
@@ -792,6 +802,41 @@ class SettingsDialog(ctk.CTkToplevel):
             values=[LANGUAGE_LABELS[key] for key in LANGUAGE_LABELS],
             **menu_style,
         ).pack(fill="x", padx=18)
+
+        # Reading, not timbre: this is about what the voice *says* when the text
+        # contains English. Latin letters are dropped outright by both
+        # front-ends, so the English has to become kana before synthesis - which
+        # means going online, hence a switch that is off by default.
+        field_label("可读英文", 17)
+        self.read_english_var = tk.BooleanVar(value=owner.config.read_english)
+        self.read_english_switch = ctk.CTkSwitch(
+            card,
+            text="自动把输入里的英文用日文假名读出来",
+            variable=self.read_english_var,
+            onvalue=True,
+            offvalue=False,
+            switch_width=42,
+            switch_height=21,
+            progress_color=PRIMARY,
+            fg_color="#C6D4CC",
+            button_color="#FFFFFF",
+            button_hover_color="#F0F5F2",
+            text_color=TEXT,
+            font=ctk.CTkFont(FONT_FAMILY, 12, "bold"),
+        )
+        self.read_english_switch.pack(anchor="w", padx=18, pady=(0, 5))
+        ctk.CTkLabel(
+            card,
+            text="打开后，输入里的英文片段会先送去翻译再合成，例如 iPhone → アイフォーン。\n"
+            "中文、日语两种语种都有效；「音声记号列」不受影响。\n"
+            "需要先在下面配好「翻译方式」，而且只有英文片段会联网发送。\n"
+            "⚠ 只有大模型 API 能识读英文；有道只能翻译意思、给不出读音"
+            "（中文语种下带英文的消息会被拦下，日语语种下会被逐字母念）。",
+            font=ctk.CTkFont(FONT_FAMILY, 11),
+            text_color=MUTED,
+            wraplength=430,
+            justify="left",
+        ).pack(anchor="w", padx=18)
 
         field_label("音色", 17)
         self.voice_var = tk.StringVar(value=VOICE_LABELS[owner.config.voice])
@@ -963,7 +1008,7 @@ class SettingsDialog(ctk.CTkToplevel):
             justify="left",
         ).pack(anchor="w", padx=18)
 
-        field_label("翻译方式（「中转日」使用）", 18)
+        field_label("翻译方式（「中转日」「可读英文」使用）", 18)
         self.provider_var = tk.StringVar(
             value=translate.PROVIDER_LABELS[owner.config.translate_provider]
         )
@@ -971,8 +1016,22 @@ class SettingsDialog(ctk.CTkToplevel):
             card,
             variable=self.provider_var,
             values=[translate.PROVIDER_LABELS[key] for key in translate.PROVIDERS],
+            command=lambda _value: self.refresh_provider_note(),
             **menu_style,
         ).pack(fill="x", padx=18)
+        # Which methods can do what is the single most confusing part of this
+        # dialog, so it is stated next to the selector rather than buried in the
+        # README - and it changes with the selection.
+        self.provider_note = ctk.CTkLabel(
+            card,
+            text="",
+            font=ctk.CTkFont(FONT_FAMILY, 11),
+            text_color=MUTED,
+            wraplength=440,
+            justify="left",
+        )
+        self.provider_note.pack(anchor="w", padx=18, pady=(6, 0))
+        self.refresh_provider_note()
         ctk.CTkLabel(
             card,
             text="只有翻译会联网，语音合成始终在本机离线完成。翻译在点击微信之前完成，"
@@ -1106,6 +1165,33 @@ class SettingsDialog(ctk.CTkToplevel):
                 return key
         return "off"
 
+    def refresh_provider_note(self) -> None:
+        """Spell out what the selected translation method can and cannot do.
+
+        「可读英文」only works with a model that accepts a prompt, and that is not
+        obvious from a list of provider names - so the limitation is stated here,
+        where the choice is made, and it updates when the choice changes.
+        """
+        provider = self.current_provider()
+        if provider == "openai":
+            self.provider_note.configure(
+                text="大模型：能给出英文的日文读音，「可读英文」靠它（hello → ハロー）。",
+                text_color=PRIMARY,
+            )
+        elif provider == "youdao":
+            self.provider_note.configure(
+                text="⚠ 有道不能识别英文：它只翻译意思，给不出英文读音。\n"
+                "· 中文语种：输入里有英文时无法发送（会被拦下，并说明原因）\n"
+                "· 日语语种：英文会被逐字母念出来，但不影响发送\n"
+                "想让英文读得出来，请把这里换成大模型 API。",
+                text_color=ERROR,
+            )
+        else:
+            self.provider_note.configure(
+                text="不翻译：「中转日」和「可读英文」都不会工作。",
+                text_color=MUTED,
+            )
+
     def current_target(self) -> str:
         label = self.target_var.get()
         for key, text in targets.TARGET_LABELS.items():
@@ -1137,6 +1223,32 @@ class SettingsDialog(ctk.CTkToplevel):
         lines.append(f"固定尺寸 {width}×{height}")
         self.calibration_summary.configure(text="\n".join(lines))
 
+    def _translate_probe(self) -> engine.AppConfig:
+        """A throwaway config built from the dialog's translator fields.
+
+        Blank secret fields mean "keep what is already saved", so the probe can
+        be built without asking the user to re-type a key. Must be called on the
+        main thread: it reads Tk variables.
+        """
+        probe = engine.AppConfig()
+        probe.translate_provider = self.current_provider()
+        probe.youdao_app_key = (
+            self.youdao_key_var.get().strip() or self.owner.config.youdao_app_key
+        )
+        probe.youdao_app_secret = (
+            self.youdao_secret_var.get().strip() or self.owner.config.youdao_app_secret
+        )
+        probe.openai_base_url = (
+            self.openai_base_var.get().strip() or translate.DEFAULT_OPENAI_BASE_URL
+        )
+        probe.openai_api_key = (
+            self.openai_key_var.get().strip() or self.owner.config.openai_api_key
+        )
+        probe.openai_model = (
+            self.openai_model_var.get().strip() or translate.DEFAULT_OPENAI_MODEL
+        )
+        return probe
+
     def test_translation(self) -> None:
         """Try a sample sentence with the values currently in the dialog.
 
@@ -1147,21 +1259,8 @@ class SettingsDialog(ctk.CTkToplevel):
         self.test_status.configure(text="正在请求翻译接口…", text_color=MUTED)
         sample = "今天天气不错，我们一起去玩吧。"
 
-        probe = engine.AppConfig()
+        probe = self._translate_probe()
         probe.translate_zh_to_ja = True
-        probe.translate_provider = self.current_provider()
-        # Blank secret fields mean "keep what is already saved".
-        probe.youdao_app_key = (
-            self.youdao_key_var.get().strip() or self.owner.config.youdao_app_key
-        )
-        probe.youdao_app_secret = (
-            self.youdao_secret_var.get().strip() or self.owner.config.youdao_app_secret
-        )
-        probe.openai_base_url = self.openai_base_var.get().strip()
-        probe.openai_api_key = (
-            self.openai_key_var.get().strip() or self.owner.config.openai_api_key
-        )
-        probe.openai_model = self.openai_model_var.get().strip()
 
         def work() -> None:
             try:
@@ -1199,20 +1298,34 @@ class SettingsDialog(ctk.CTkToplevel):
         # resolved here alongside the rest - reading it inside work() raises
         # "main thread is not in main loop".
         without_accent = not self.chinese_accent_var.get()
-        sample = (
-            "ゆっくりしていってね！"
-            if language == "ja"
-            else "你好，我是油库里，正在测试语音。"
-        )
+        read_english = bool(self.read_english_var.get()) and language in ("zh", "ja")
+        # The sample carries English when the switch is on, so that flipping it
+        # and pressing 试听 is enough to hear the difference.
         if language == "raw":
             sample = "ゆっくり/して'いってね"
+        elif language == "ja":
+            sample = (
+                "Hello、ゆっくりしていってね！"
+                if read_english
+                else "ゆっくりしていってね！"
+            )
+        elif read_english:
+            sample = "你好，我是油库里，正在测试 iPhone 和 ChatGPT。"
+        else:
+            sample = "你好，我是油库里，正在测试语音。"
+        # Built here, not inside work(): it reads Tk variables.
+        probe = self._translate_probe() if read_english else None
 
         def work() -> None:
             try:
+                spoken = sample
+                english: list = []
+                if probe is not None:
+                    spoken, english = translate.read_english(sample, probe)
                 target = CONFIG_DIR / "preview.wav"
                 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
                 reply = self.owner.engine.synth.synthesize(
-                    sample,
+                    spoken,
                     target,
                     lang=language,
                     voice=voice,
@@ -1225,10 +1338,14 @@ class SettingsDialog(ctk.CTkToplevel):
                 winsound.PlaySound(
                     str(target), winsound.SND_FILENAME | winsound.SND_ASYNC
                 )
+                note = _english_note(english)
+                message = f"已播放 {duration:.1f} 秒示例"
+                if note:
+                    message = f"{message}（{note}）"
                 self.after(
                     0,
-                    lambda: self.preview_status.configure(
-                        text=f"已播放 {duration:.1f} 秒示例", text_color=PRIMARY
+                    lambda text=message: self.preview_status.configure(
+                        text=text, text_color=PRIMARY
                     ),
                 )
             except Exception as error:
@@ -1236,8 +1353,8 @@ class SettingsDialog(ctk.CTkToplevel):
                 detail = str(error)
                 self.after(
                     0,
-                    lambda: self.preview_status.configure(
-                        text=detail, text_color=ERROR
+                    lambda text=detail: self.preview_status.configure(
+                        text=text, text_color=ERROR
                     ),
                 )
             finally:
@@ -1270,6 +1387,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self.owner.config.quick_hotkey = normalized
         self.owner.config.auto_switch_capture = bool(self.switch_capture_var.get())
 
+        self.owner.config.read_english = bool(self.read_english_var.get())
         self.owner.config.translate_provider = self.current_provider()
         self.owner.config.youdao_app_key = self.youdao_key_var.get().strip()
         self.owner.config.openai_base_url = (
@@ -1843,6 +1961,8 @@ class WidgetApp:
         else:
             self.placeholder.place(x=8, y=5)
         self.update_send_button()
+        # Cheap, and it is the only thing that notices English being typed.
+        self.update_translate_hint()
 
     def clear_text(self) -> None:
         if not self.busy:
@@ -1850,25 +1970,56 @@ class WidgetApp:
             self.on_text_modified()
             self.text.focus_set()
 
+    def english_hint(self, content: str) -> tuple[str, str]:
+        """``(text, colour)`` saying what will happen to the English in ``content``.
+
+        One place decides this, so the hint line and the send button cannot
+        disagree about whether a message can go out.
+        """
+        plan = engine.VoiceEngine.english_plan(self.config, content)
+        if plan == "read":
+            return "英文会按日文假名读出", PRIMARY
+        if plan == "blocked":
+            return (
+                "输入里有英文，而中文油库里读不了英文、当前翻译方式也给不出读音："
+                "请换成大模型 API，或删掉英文，或关掉「可读英文」",
+                ERROR,
+            )
+        if plan == "spelled":
+            return "当前翻译方式给不出英文读音，这些英文会被逐字母念出来", ERROR
+        if not self.config.read_english and translate.find_english_segments(content):
+            return "输入框里有英文，设置里可开启「可读英文」", MUTED
+        return "", MUTED
+
     def update_translate_hint(self) -> None:
-        """Describe what "中转日" will do, or why it cannot."""
+        """Describe what "中转日" will do, or why it cannot.
+
+        Doubles as the place the English reading is advertised: 可读英文 is off
+        by default, so the only way a user learns it exists is by typing English
+        and being told. That keeps the hint honest - it appears when it is
+        actionable, not as permanent decoration. It is also where a message that
+        cannot be sent is explained.
+        """
         if not self.config.translate_zh_to_ja:
             label = LANGUAGE_LABELS.get(self.config.language, self.config.language)
-            self.translate_hint.configure(
-                text=f"关闭：直接用{label}合成", text_color=MUTED
-            )
-            return
-        ready, detail = self.config.translation_ready()
-        if ready:
-            provider = translate.PROVIDER_LABELS.get(
-                self.config.translate_provider, self.config.translate_provider
-            )
-            self.translate_hint.configure(
-                text=f"打开：中文 → 日文（{provider}）→ 日语油库里语音",
-                text_color=PRIMARY,
-            )
+            text, color = f"关闭：直接用{label}合成", MUTED
         else:
-            self.translate_hint.configure(text=f"打开，但还没配好：{detail}", text_color=ERROR)
+            ready, detail = self.config.translation_ready()
+            if ready:
+                provider = translate.PROVIDER_LABELS.get(
+                    self.config.translate_provider, self.config.translate_provider
+                )
+                text = f"打开：中文 → 日文（{provider}）→ 日语油库里语音"
+                color = PRIMARY
+            else:
+                text, color = f"打开，但还没配好：{detail}", ERROR
+
+        extra, extra_color = self.english_hint(self.text.get("1.0", "end-1c"))
+        if extra:
+            text = f"{text}｜{extra}"
+            if extra_color == ERROR:
+                color = ERROR
+        self.translate_hint.configure(text=text, text_color=color)
 
     def on_translate_toggled(self) -> None:
         self.config.translate_zh_to_ja = bool(self.translate_var.get())
@@ -1882,8 +2033,19 @@ class WidgetApp:
     def update_send_button(self) -> None:
         if not hasattr(self, "send_button"):
             return
-        has_text = bool(self.text.get("1.0", "end-1c").strip())
-        state = "normal" if has_text and self.preflight_ok and not self.busy else "disabled"
+        content = self.text.get("1.0", "end-1c")
+        has_text = bool(content.strip())
+        # A message whose English cannot be read is refused here rather than
+        # after the click: sending it would produce a voice that quietly drops
+        # the words the user typed in English. The hint line says why.
+        english_ok = (
+            engine.VoiceEngine.english_plan(self.config, content) != "blocked"
+        )
+        state = (
+            "normal"
+            if has_text and self.preflight_ok and not self.busy and english_ok
+            else "disabled"
+        )
         self.send_button.configure(
             state=state,
             fg_color=ACTION if state == "normal" else "#A9CEBA",
@@ -1891,10 +2053,12 @@ class WidgetApp:
         )
         # Preview deliberately ignores preflight_ok: it only needs the
         # synthesizer, and hearing the text is most useful exactly when the chat
-        # window or the cable is not ready yet.
+        # window or the cable is not ready yet. It does follow the English gate,
+        # because a preview of a message that cannot be sent would only repeat
+        # the hint line's explanation.
         if hasattr(self, "preview_button"):
             self.preview_button.configure(
-                state="normal" if has_text and not self.busy else "disabled"
+                state="normal" if has_text and not self.busy and english_ok else "disabled"
             )
 
     def set_status(self, text: str, *, error: bool = False) -> None:
@@ -2056,7 +2220,10 @@ class WidgetApp:
             )
             duration = float(result.get("duration") or 0.0)
             translated = str(result.get("translated") or "")
-            self.root.after(0, lambda: self._preview_finished(duration, translated))
+            english = result.get("english") or []
+            self.root.after(
+                0, lambda: self._preview_finished(duration, translated, english)
+            )
         except translate.TranslationError as error:
             logging.warning("试听：翻译失败：%s", error)
             self.root.after(
@@ -2064,8 +2231,8 @@ class WidgetApp:
                 lambda value=str(error): self._preview_failed(
                     "翻译失败",
                     value,
-                    "试听不会发送任何消息。请检查「中转日」的翻译设置，"
-                    "或先关掉它改用中文油库里。",
+                    "试听不会发送任何消息。请检查翻译设置（「中转日」和「可读英文」都用它），"
+                    "或先把这两个开关关掉。",
                 ),
             )
         except Exception as error:
@@ -2074,13 +2241,20 @@ class WidgetApp:
                 0, lambda value=str(error): self._preview_failed("试听失败", value)
             )
 
-    def _preview_finished(self, duration: float, translated: str) -> None:
+    def _preview_finished(
+        self, duration: float, translated: str, english: list | None = None
+    ) -> None:
         self._restore_controls()
+        note = _english_note(english or [])
         if translated:
             # The user typed Chinese and heard Japanese; show what was spoken.
             spoken = translated if len(translated) <= 30 else translated[:30] + "…"
             self.set_status(
                 f"已试听 {duration:.1f} 秒（日语译文：{spoken}） · 内容对了再点「发送语音」"
+            )
+        elif note:
+            self.set_status(
+                f"已试听 {duration:.1f} 秒（{note}） · 内容对了再点「发送语音」"
             )
         else:
             self.set_status(f"已试听 {duration:.1f} 秒 · 内容对了再点「发送语音」")
@@ -2143,7 +2317,10 @@ class WidgetApp:
             )
             duration = float(result.get("duration") or 0.0)
             translated = str(result.get("translated") or "")
-            self.root.after(0, lambda: self._send_finished(duration, translated))
+            english = result.get("english") or []
+            self.root.after(
+                0, lambda: self._send_finished(duration, translated, english)
+            )
         except windowing.CalibrationError as error:
             # The voice controls were not where we expected them: offer to
             # re-measure instead of just reporting a failure.
@@ -2171,8 +2348,8 @@ class WidgetApp:
         messagebox.showerror(
             "翻译失败，未发送",
             f"{detail}\n\n"
-            "没有发送任何消息。请检查「中转日」的翻译设置，"
-            "或先关掉它改用中文油库里。",
+            "没有发送任何消息。请检查翻译设置（「中转日」和「可读英文」都用它），"
+            "或先把这两个开关关掉。",
             parent=parent,
         )
 
@@ -2202,7 +2379,9 @@ class WidgetApp:
         self.update_send_button()
         self.quick_window.set_busy(False)
 
-    def _send_finished(self, duration: float, translated: str = "") -> None:
+    def _send_finished(
+        self, duration: float, translated: str = "", english: list | None = None
+    ) -> None:
         source = self.active_send_source
         self.active_send_source = None
         self._restore_controls()
@@ -2211,10 +2390,13 @@ class WidgetApp:
         else:
             self.text.delete("1.0", "end")
             self.on_text_modified()
+        note = _english_note(english or [])
         if translated:
             # Show what was actually spoken, since the user typed Chinese.
             preview = translated if len(translated) <= 40 else translated[:40] + "…"
             self.set_status(f"已发送日语语音 · {duration:.1f} 秒 · 译文：{preview}")
+        elif note:
+            self.set_status(f"已触发发送 · 语音约 {duration:.1f} 秒 · {note}")
         else:
             self.set_status(f"已触发发送 · 语音约 {duration:.1f} 秒")
         self.root.bell()
