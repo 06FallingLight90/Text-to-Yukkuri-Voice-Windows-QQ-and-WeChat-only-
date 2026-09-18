@@ -221,6 +221,70 @@ def main() -> int:
         finally:
             echo_server.shutdown()
 
+        print("\n=== 思考强度（请求里到底多了什么） ===")
+        for mode, expected in (
+            ("default", {}),
+            ("off", {"enable_thinking": False, "thinking": {"type": "disabled"}}),
+            ("low", {"reasoning_effort": "low"}),
+            ("high", {"reasoning_effort": "high"}),
+        ):
+            translate.translate_openai(
+                "你好", base, "sk-test", "mock-model", reasoning=mode
+            )
+            body = captured.get("openai_body", {})
+            extra = {
+                key: value
+                for key, value in body.items()
+                if key not in ("model", "messages", "temperature", "stream")
+            }
+            print(f"  {mode:8s} -> {extra}")
+            if extra != expected:
+                failures += 1
+                print(f"  FAIL: {mode} sent {extra}, expected {expected}")
+        # An unknown value must fall back to "不干预" rather than being passed on.
+        translate.translate_openai(
+            "你好", base, "sk-test", "mock-model", reasoning="乱填的"
+        )
+        extra = {
+            key: value
+            for key, value in captured.get("openai_body", {}).items()
+            if key not in ("model", "messages", "temperature", "stream")
+        }
+        if extra:
+            failures += 1
+            print(f"  FAIL: an invalid reasoning value was forwarded: {extra}")
+        else:
+            print("  非法值   -> 回退为不干预（没有多发字段）")
+
+        print("\n=== 思维链不能念出来（<think> 必须被剪掉） ===")
+
+        class ThinkHandler(MockHandler):
+            def do_POST(self):
+                self._send(
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": "<think>先想想怎么说…</think>今日はいい天気ですね。"
+                                }
+                            }
+                        ]
+                    }
+                )
+
+        think_server = ThreadingHTTPServer(("127.0.0.1", 0), ThinkHandler)
+        threading.Thread(target=think_server.serve_forever, daemon=True).start()
+        try:
+            cleaned = translate.translate_openai(
+                "你好", f"http://127.0.0.1:{think_server.server_address[1]}", "k", "m"
+            )
+            print(f"  返回内容 -> {cleaned!r}")
+            if "think" in cleaned or "先想想" in cleaned:
+                failures += 1
+                print("  FAIL: the reasoning block reached the TTS output")
+        finally:
+            think_server.shutdown()
+
         print("\n=== error handling ===")
         # A Youdao error code must surface with a readable message.
         class ErrHandler(MockHandler):

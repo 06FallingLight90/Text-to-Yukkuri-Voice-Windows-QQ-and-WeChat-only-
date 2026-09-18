@@ -165,6 +165,9 @@ class AppConfig:
         self.openai_base_url = translate.DEFAULT_OPENAI_BASE_URL
         self.openai_api_key = ""
         self.openai_model = translate.DEFAULT_OPENAI_MODEL
+        #: Whether the LLM may "think" (reason) before translating, and how
+        #: hard; see translate.REASONING_OPTIONS.
+        self.openai_reasoning = translate.DEFAULT_OPENAI_REASONING
         self.load()
 
     def load(self) -> None:
@@ -207,6 +210,14 @@ class AppConfig:
             self.openai_model = str(
                 data.get("openai_model") or translate.DEFAULT_OPENAI_MODEL
             )
+            reasoning = str(
+                data.get("openai_reasoning") or translate.DEFAULT_OPENAI_REASONING
+            )
+            self.openai_reasoning = (
+                reasoning
+                if reasoning in translate.REASONING_OPTIONS
+                else translate.DEFAULT_OPENAI_REASONING
+            )
         except Exception:
             logging.exception("读取配置失败，已回退到默认值")
 
@@ -232,6 +243,7 @@ class AppConfig:
             "openai_base_url": self.openai_base_url,
             "openai_api_key_dpapi": protect_secret(self.openai_api_key),
             "openai_model": self.openai_model,
+            "openai_reasoning": self.openai_reasoning,
         }
         CONFIG_FILE.write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
