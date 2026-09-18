@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import psutil
 import sounddevice as sd
 import soundfile as sf
 
@@ -236,6 +237,158 @@ def require_local_audio_session() -> None:
             "本机的 VB-CABLE 录音端点，微信会显示“未找到麦克风”。请在本地控制台"
             "会话或不会隔离主机音频设备的远控会话中运行。"
         )
+
+
+# --- who is recording -------------------------------------------------------
+#
+# "Is WeChat recording?" looks easy to read off the screen and is not: its window
+# can be hidden, occluded, on another monitor or simply not repainting - all four
+# happened in one evening of testing - and then a screenshot of the input row
+# shows nothing that changes. Windows itself knows the answer: while WeChat
+# records it holds an *active* capture session on the endpoint it records from.
+# So ask the audio session list. No pixels, no colours, no window involved.
+
+#: AudioSessionStateActive; Inactive is 0 and Expired is 2.
+_SESSION_STATE_ACTIVE = 1
+
+
+def _process_name(pid: int) -> str:
+    """Lower-cased executable name for ``pid``; "" when it cannot be read."""
+    try:
+        return psutil.Process(pid).name().casefold()
+    except Exception:
+        return ""
+
+
+def _endpoint_capture_pids(device) -> list[int] | None:
+    """PIDs with an active capture session on one endpoint; None on failure.
+
+    The vtable slots, each starting after IUnknown's three: IMMDevice::Activate
+    = 3, IAudioSessionManager2::GetSessionEnumerator = 5 (the five slots it
+    inherits from IAudioSessionManager come first),
+    IAudioSessionEnumerator::GetCount = 3 and ::GetSession = 4,
+    IAudioSessionControl::GetState = 3, and IAudioSessionControl2::GetProcessId
+    = 14 (twelve inherited slots, then GetSessionIdentifier and
+    GetSessionInstanceIdentifier).
+    """
+    manager = ctypes.c_void_p()
+    sessions = ctypes.c_void_p()
+    try:
+        hr = _com_call(
+            device, 3, ctypes.c_long,
+            [ctypes.POINTER(_GUID), ctypes.c_ulong, ctypes.c_void_p,
+             ctypes.POINTER(ctypes.c_void_p)],
+            ctypes.byref(_IID_IAUDIO_SESSION_MANAGER2), _CLSCTX_ALL, None,
+            ctypes.byref(manager),
+        )
+        if hr < 0 or not manager:
+            return None
+        hr = _com_call(
+            manager, 5, ctypes.c_long, [ctypes.POINTER(ctypes.c_void_p)],
+            ctypes.byref(sessions),
+        )
+        if hr < 0 or not sessions:
+            return None
+
+        count = ctypes.c_int()
+        _com_call(
+            sessions, 3, ctypes.c_long, [ctypes.POINTER(ctypes.c_int)],
+            ctypes.byref(count),
+        )
+        pids: list[int] = []
+        for index in range(count.value):
+            control = ctypes.c_void_p()
+            hr = _com_call(
+                sessions, 4, ctypes.c_long,
+                [ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)],
+                index, ctypes.byref(control),
+            )
+            if hr < 0 or not control:
+                continue
+            control2 = ctypes.c_void_p()
+            try:
+                state = ctypes.c_int()
+                _com_call(
+                    control, 3, ctypes.c_long, [ctypes.POINTER(ctypes.c_int)],
+                    ctypes.byref(state),
+                )
+                if state.value != _SESSION_STATE_ACTIVE:
+                    continue
+                hr = _com_call(
+                    control, 0, ctypes.c_long,
+                    [ctypes.POINTER(_GUID), ctypes.POINTER(ctypes.c_void_p)],
+                    ctypes.byref(_IID_IAUDIO_SESSION_CONTROL2),
+                    ctypes.byref(control2),
+                )
+                if hr < 0 or not control2:
+                    continue
+                pid = ctypes.c_ulong()
+                _com_call(
+                    control2, 14, ctypes.c_long,
+                    [ctypes.POINTER(ctypes.c_ulong)], ctypes.byref(pid),
+                )
+                if pid.value:
+                    pids.append(int(pid.value))
+            finally:
+                _release(control2)
+                _release(control)
+        return pids
+    finally:
+        _release(sessions)
+        _release(manager)
+
+
+def capturing_process_names() -> set[str]:
+    """Names of every process recording from the default microphone right now.
+
+    All three roles usually name the same endpoint, so it is enumerated once.
+    Raises when Windows cannot answer at all, so that a failed query never looks
+    like "nothing is recording".
+    """
+    if os.name != "nt":
+        return set()
+    enumerator = _device_enumerator()
+    seen: set[str] = set()
+    names: set[str] = set()
+    answered = False
+    try:
+        for role in SWAP_ROLES:
+            device = ctypes.c_void_p()
+            try:
+                hr = _com_call(
+                    enumerator, 4, ctypes.c_long,
+                    [ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p)],
+                    _FLOW_CAPTURE, role, ctypes.byref(device),
+                )
+                if hr < 0 or not device:
+                    continue
+                identifier = _endpoint_id(device)
+                if identifier and identifier in seen:
+                    answered = True  # same endpoint as an earlier role
+                    continue
+                if identifier:
+                    seen.add(identifier)
+                pids = _endpoint_capture_pids(device)
+                if pids is None:
+                    continue
+                answered = True
+                for pid in pids:
+                    name = _process_name(pid)
+                    if name:
+                        names.add(name)
+            finally:
+                _release(device)
+    finally:
+        _release(enumerator)
+    if not answered:
+        raise RuntimeError("无法查询 Windows 音频会话列表（COM 调用失败）")
+    return names
+
+
+def is_capturing(process_names: set[str]) -> bool:
+    """Whether one of ``process_names`` is recording from the default mic."""
+    wanted = {name.casefold() for name in process_names}
+    return bool(capturing_process_names() & wanted)
 
 
 def trim_leading_silence(
@@ -487,6 +640,10 @@ class _PropertyKey(ctypes.Structure):
 
 _CLSID_MMDEVICE_ENUMERATOR = _GUID.parse("BCDE0395-E52F-467C-8E3D-C4579291692E")
 _IID_IMMDEVICE_ENUMERATOR = _GUID.parse("A95664D2-9614-4F35-A746-DE8DB63617E6")
+#: IAudioSessionManager2, activated on the default capture endpoint.
+_IID_IAUDIO_SESSION_MANAGER2 = _GUID.parse("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F")
+#: IAudioSessionControl2, for the process behind a session.
+_IID_IAUDIO_SESSION_CONTROL2 = _GUID.parse("BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D")
 _PKEY_DEVICE_FRIENDLY_NAME = _GUID.parse("A45C254E-DF1C-4EFD-8020-67D146A850E0")
 _PKEY_FRIENDLY_NAME_PID = 14
 
@@ -922,6 +1079,7 @@ __all__ = [
     "ROLE_CONSOLE",
     "ROLE_MULTIMEDIA",
     "capture_endpoint_id",
+    "capturing_process_names",
     "default_capture_endpoint_id",
     "default_capture_name",
     "default_endpoint_name",
@@ -929,6 +1087,7 @@ __all__ = [
     "default_render_name",
     "find_output_device",
     "find_output_devices",
+    "is_capturing",
     "list_capture_endpoints",
     "list_output_devices",
     "play_candidates",

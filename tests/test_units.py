@@ -18,6 +18,7 @@ import json
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
@@ -27,6 +28,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import audio  # noqa: E402
 import engine  # noqa: E402
 import hotkeys  # noqa: E402
 import translate  # noqa: E402
@@ -414,101 +416,55 @@ class ScreenshotRegionTests(unittest.TestCase):
         self.assertIsNone(windowing.capture_region((100, 100, 100, 100)))
 
 
-class InputRowBoxTests(unittest.TestCase):
-    """看输入栏的这块区域只看几何：正好是客户区右下角，并且不越出屏幕。"""
+class RecordingDetectionTests(unittest.TestCase):
+    """录音状态看"微信有没有在采集麦克风"，不看屏幕。
 
-    def box_for(self, geometry, screen=(2560, 1440)):
-        with mock.patch.object(wechat, "client_geometry", lambda hwnd: geometry), \
-             mock.patch.object(wechat.windowing, "primary_screen_size", lambda: screen):
-            return wechat.input_row_box(1)
-
-    def test_it_is_the_bottom_right_corner(self) -> None:
-        # left, top, width, height, right, bottom
-        box = self.box_for((300, 200, 1200, 800, 1500, 1000))
-        self.assertEqual(
-            box,
-            (
-                1500 - wechat.INPUT_ROW_WIDTH,
-                1000 - wechat.INPUT_ROW_HEIGHT,
-                1500,
-                1000,
-            ),
-        )
-
-    def test_a_window_off_the_primary_monitor_has_no_box(self) -> None:
-        self.assertIsNone(self.box_for((-2000, 100, 1200, 800, -800, 900)))
-
-    def test_the_box_stops_at_the_screen_edge(self) -> None:
-        # A window hanging off the bottom-right: the box is anchored to the
-        # window corner and then clipped, so it never asks for pixels that are
-        # not on the screen (pyscreeze pads those with black instead of failing).
-        box = self.box_for((1500, 700, 1200, 800, 2700, 1500))
-        self.assertGreaterEqual(box[0], 0)
-        self.assertGreaterEqual(box[1], 0)
-        self.assertLessEqual(box[2], 2560)
-        self.assertLessEqual(box[3], 1440)
-        self.assertGreater(box[2] - box[0], 0)
-        self.assertGreater(box[3] - box[1], 0)
-
-
-class InputRowTests(unittest.TestCase):
-    """工具栏 ↔ 录音条的判断只比较前后两张图，不认任何颜色。
-
-    这条是给"不同微信版本 / 浅色深色模式按钮颜色不一样"留的余地：这里没有任何
-    颜色常量，换皮肤、换主题、换版本都不会影响判断。
+    截图判断在窗口隐藏、被遮挡、不重绘时会失效（这三种都实测撞到过），
+    而 Windows 的音频会话列表不会：查询失败会直接报错，不会伪装成"没在录音"。
     """
 
-    def frame(self, *, filled=False):
-        image = np.zeros(
-            (wechat.INPUT_ROW_HEIGHT, wechat.INPUT_ROW_WIDTH, 3), dtype=np.uint8
-        )
-        if filled:
-            image[:] = 255
-        return image
-
-    def test_the_same_row_has_not_changed(self) -> None:
-        self.assertFalse(wechat.input_row_replaced(self.frame(), self.frame()))
-
-    def test_a_replaced_row_counts_as_changed_whatever_its_colour(self) -> None:
-        self.assertTrue(wechat.input_row_replaced(self.frame(), self.frame(filled=True)))
-
-    def test_a_few_percent_of_pixels_is_not_a_new_row(self) -> None:
-        # 鼠标悬停在按钮上只动一小块，不能当成"进入录音模式"
-        baseline = self.frame()
-        current = baseline.copy()
-        current[:10, :40] = 255  # 400 / 38640 ≈ 1%
-        self.assertFalse(wechat.input_row_replaced(baseline, current))
-
-    def test_waiting_returns_as_soon_as_the_row_changes(self) -> None:
-        baseline = self.frame()
-        images = [baseline, baseline, self.frame(filled=True)]
+    def test_a_recording_wechat_is_detected(self) -> None:
         with mock.patch.object(
-            wechat, "input_row_image", lambda hwnd: images.pop(0)
+            audio, "capturing_process_names", lambda: {"weixin.exe"}
         ):
-            self.assertTrue(
-                wechat.wait_for_input_row(1, baseline, changed=True, timeout=1.0)
-            )
-        # A fourth poll would have raised: it stopped the moment the row changed.
-        self.assertEqual(images, [])
+            self.assertTrue(wechat.recording_now())
+            self.assertTrue(wechat.wait_for_recording(timeout=0.0))
 
-    def test_waiting_for_the_toolbar_to_come_back(self) -> None:
-        recording_bar = self.frame(filled=True)
-        images = [recording_bar, self.frame()]
+    def test_another_app_recording_does_not_count(self) -> None:
+        with mock.patch.object(audio, "capturing_process_names", lambda: {"qq.exe"}):
+            self.assertFalse(wechat.recording_now())
+            self.assertFalse(wechat.wait_for_recording(timeout=0.0))
+
+    def test_waiting_polls_until_it_starts(self) -> None:
+        answers = [set(), set(), {"weixin.exe"}]
         with mock.patch.object(
-            wechat, "input_row_image", lambda hwnd: images.pop(0)
+            audio, "capturing_process_names", lambda: answers.pop(0)
         ):
-            self.assertTrue(
-                wechat.wait_for_input_row(
-                    1, recording_bar, changed=False, timeout=1.0
-                )
-            )
+            self.assertTrue(wechat.wait_for_recording(timeout=1.0))
+        # A fourth poll would have raised: it stopped as soon as it saw it.
+        self.assertEqual(answers, [])
 
-    def test_waiting_gives_up_after_the_timeout(self) -> None:
-        baseline = self.frame()
-        with mock.patch.object(wechat, "input_row_image", lambda hwnd: baseline):
-            self.assertFalse(
-                wechat.wait_for_input_row(1, baseline, changed=True, timeout=0.0)
-            )
+    def test_waiting_for_it_to_stop(self) -> None:
+        answers = [{"weixin.exe"}, set()]
+        with mock.patch.object(
+            audio, "capturing_process_names", lambda: answers.pop(0)
+        ):
+            self.assertTrue(wechat.wait_for_recording_end(timeout=1.0))
+
+    def test_names_match_regardless_of_case(self) -> None:
+        with mock.patch.object(
+            audio, "capturing_process_names", lambda: {"weixin.exe"}
+        ):
+            self.assertTrue(audio.is_capturing({"Weixin.exe"}))
+
+    def test_a_query_that_cannot_be_answered_is_not_silence(self) -> None:
+        # The whole point of asking Windows instead of the screen: a failed query
+        # must surface, never be mistaken for "nothing is recording".
+        with mock.patch.object(
+            audio, "_device_enumerator", side_effect=RuntimeError("boom")
+        ):
+            with self.assertRaises(RuntimeError):
+                audio.capturing_process_names()
 
 
 class ClickTargetTests(unittest.TestCase):
@@ -544,10 +500,10 @@ class ClickTargetTests(unittest.TestCase):
 
 
 class RecordingStateTests(unittest.TestCase):
-    """清理动作只在"这一轮确实看到录音条"之后才允许发生。
+    """清理只在"这一轮确实看到微信开始录音、而且现在还在录"时才动手。
 
-    用户实测（2026-09-18）：微信没在录音时按 Esc 会把整个窗口最小化。旧版在把
-    绿色「发送」按钮误判成录音按钮之后，正是用 Esc 去"自愈"的，结果窗口没了。
+    用户实测（2026-09-18）：微信没在录音时按 Esc 会把整个窗口最小化。旧版把
+    绿色「发送」按钮误判成录音按钮之后，正是用 Esc 去"自愈"的，窗口就没了。
     """
 
     CLIENT = (100, 100, 1200, 800, 1300, 900)  # left, top, width, height, right, bottom
@@ -558,40 +514,64 @@ class RecordingStateTests(unittest.TestCase):
     def tearDown(self) -> None:
         wechat._recording_started = False
 
-    def frame(self, *, recording_bar=False):
-        image = np.zeros(
-            (wechat.INPUT_ROW_HEIGHT, wechat.INPUT_ROW_WIDTH, 3), dtype=np.uint8
-        )
-        if recording_bar:
-            image[:] = 255
-        return image
-
     def test_an_idle_wechat_is_never_touched(self) -> None:
         pressed, clicked = [], []
         with mock.patch.object(
             wechat.pyautogui, "press", lambda key: pressed.append(key)
-        ), mock.patch.object(wechat.pyautogui, "click", lambda x, y: clicked.append((x, y))):
+        ), mock.patch.object(
+            wechat.pyautogui, "click", lambda x, y: clicked.append((x, y))
+        ):
             wechat.leave_recording_mode(1)
         self.assertEqual(pressed, [])
         self.assertEqual(clicked, [])
 
-    def test_a_recording_this_run_started_is_cancelled_by_a_click(self) -> None:
+    def test_nothing_is_done_when_the_recording_already_stopped(self) -> None:
         wechat._recording_started = True
         clicked, pressed = [], []
-        images = [self.frame(recording_bar=True), self.frame()]
-        with mock.patch.object(wechat, "load_offsets", lambda: dict(wechat.DEFAULTS)), \
-             mock.patch.object(wechat, "client_geometry", lambda hwnd: self.CLIENT), \
-             mock.patch.object(windowing, "client_geometry", lambda hwnd: self.CLIENT), \
-             mock.patch.object(
-                 windowing, "virtual_screen_bounds", lambda: (0, 0, 2560, 1440)
-             ), \
-             mock.patch.object(wechat, "input_row_image", lambda hwnd: images.pop(0)), \
+        with mock.patch.object(wechat, "recording_now", lambda: False), \
              mock.patch.object(
                  wechat.pyautogui, "click", lambda x, y: clicked.append((x, y))
              ), \
              mock.patch.object(
                  wechat.pyautogui, "press", lambda key: pressed.append(key)
              ):
+            wechat.leave_recording_mode(1)
+        self.assertEqual(clicked, [])
+        self.assertEqual(pressed, [])
+
+    def cancel_patches(self, clicked, pressed, *, still_recording: bool):
+        """The stubs every cleanup test needs, and nothing else."""
+        return [
+            mock.patch.object(wechat, "recording_now", lambda: True),
+            mock.patch.object(
+                wechat,
+                "wait_for_recording_end",
+                lambda timeout=None: not still_recording,
+            ),
+            mock.patch.object(wechat, "load_offsets", lambda: dict(wechat.DEFAULTS)),
+            mock.patch.object(wechat, "client_geometry", lambda hwnd: self.CLIENT),
+            mock.patch.object(
+                windowing, "client_geometry", lambda hwnd: self.CLIENT
+            ),
+            mock.patch.object(windowing, "require_foreground", lambda *args: None),
+            mock.patch.object(
+                windowing, "virtual_screen_bounds", lambda: (0, 0, 2560, 1440)
+            ),
+            mock.patch.object(wechat, "RECORDING_CANCEL_SETTLE_SEC", 0.0),
+            mock.patch.object(
+                wechat.pyautogui, "click", lambda x, y: clicked.append((x, y))
+            ),
+            mock.patch.object(
+                wechat.pyautogui, "press", lambda key: pressed.append(key)
+            ),
+        ]
+
+    def test_a_recording_this_run_started_is_cancelled_by_a_click(self) -> None:
+        wechat._recording_started = True
+        clicked, pressed = [], []
+        with ExitStack() as stack:
+            for manager in self.cancel_patches(clicked, pressed, still_recording=False):
+                stack.enter_context(manager)
             wechat.leave_recording_mode(1)
 
         send_dx, send_dy = wechat.DEFAULTS["send"]
@@ -605,56 +585,45 @@ class RecordingStateTests(unittest.TestCase):
     def test_escape_is_only_the_last_resort(self) -> None:
         wechat._recording_started = True
         clicked, pressed = [], []
-        stuck = self.frame(recording_bar=True)
-        with mock.patch.object(wechat, "load_offsets", lambda: dict(wechat.DEFAULTS)), \
-             mock.patch.object(wechat, "client_geometry", lambda hwnd: self.CLIENT), \
-             mock.patch.object(windowing, "client_geometry", lambda hwnd: self.CLIENT), \
-             mock.patch.object(
-                 windowing, "virtual_screen_bounds", lambda: (0, 0, 2560, 1440)
-             ), \
-             mock.patch.object(wechat, "input_row_image", lambda hwnd: stuck), \
-             mock.patch.object(wechat, "RECORDING_TIMEOUT_SEC", 0.0), \
-             mock.patch.object(wechat, "RECORDING_CANCEL_SETTLE_SEC", 0.0), \
-             mock.patch.object(
-                 wechat.pyautogui, "click", lambda x, y: clicked.append((x, y))
-             ), \
-             mock.patch.object(
-                 wechat.pyautogui, "press", lambda key: pressed.append(key)
-             ):
+        with ExitStack() as stack:
+            for manager in self.cancel_patches(clicked, pressed, still_recording=True):
+                stack.enter_context(manager)
             wechat.leave_recording_mode(1)
-
         self.assertEqual(len(clicked), 1)  # the cancel click was tried first
         self.assertEqual(pressed, ["escape"])  # and only then Escape
 
-    def test_a_send_uses_the_calibrated_send_button(self) -> None:
-        clicked, moved, pressed = [], [], []
-        images = [
-            self.frame(),  # enter: baseline (idle toolbar)
-            self.frame(recording_bar=True),  # enter: the recording bar appeared
-            self.frame(recording_bar=True),  # finish: baseline (recording bar)
-            self.frame(),  # finish: the toolbar came back
+    def send_patches(self, clicked, pressed, *, starts: bool, ends: bool = True):
+        return [
+            mock.patch.object(wechat, "wait_for_recording", lambda timeout=None: starts),
+            mock.patch.object(
+                wechat, "wait_for_recording_end", lambda timeout=None: ends
+            ),
+            mock.patch.object(wechat, "load_offsets", lambda: dict(wechat.DEFAULTS)),
+            mock.patch.object(wechat, "client_geometry", lambda hwnd: self.CLIENT),
+            mock.patch.object(wechat, "is_minimized", lambda hwnd: False),
+            mock.patch.object(
+                wechat, "force_canonical_size", lambda hwnd, size: tuple(size)
+            ),
+            mock.patch.object(
+                windowing, "client_geometry", lambda hwnd: self.CLIENT
+            ),
+            mock.patch.object(windowing, "require_foreground", lambda *args: None),
+            mock.patch.object(
+                windowing, "virtual_screen_bounds", lambda: (0, 0, 2560, 1440)
+            ),
+            mock.patch.object(
+                wechat.pyautogui, "click", lambda x, y: clicked.append((x, y))
+            ),
+            mock.patch.object(
+                wechat.pyautogui, "press", lambda key: pressed.append(key)
+            ),
         ]
-        with mock.patch.object(wechat, "load_offsets", lambda: dict(wechat.DEFAULTS)), \
-             mock.patch.object(wechat, "client_geometry", lambda hwnd: self.CLIENT), \
-             mock.patch.object(wechat, "is_minimized", lambda hwnd: False), \
-             mock.patch.object(
-                 wechat, "force_canonical_size", lambda hwnd, size: tuple(size)
-             ), \
-             mock.patch.object(wechat, "HOVER_SETTLE_SEC", 0.0), \
-             mock.patch.object(wechat, "input_row_image", lambda hwnd: images.pop(0)), \
-             mock.patch.object(windowing, "client_geometry", lambda hwnd: self.CLIENT), \
-             mock.patch.object(
-                 windowing, "virtual_screen_bounds", lambda: (0, 0, 2560, 1440)
-             ), \
-             mock.patch.object(
-                 wechat.pyautogui, "moveTo", lambda x, y: moved.append((x, y))
-             ), \
-             mock.patch.object(
-                 wechat.pyautogui, "click", lambda x, y: clicked.append((x, y))
-             ), \
-             mock.patch.object(
-                 wechat.pyautogui, "press", lambda key: pressed.append(key)
-             ):
+
+    def test_a_send_uses_the_calibrated_send_button(self) -> None:
+        clicked, pressed = [], []
+        with ExitStack() as stack:
+            for manager in self.send_patches(clicked, pressed, starts=True):
+                stack.enter_context(manager)
             points = wechat.enter_voice_mode(1)
             self.assertTrue(wechat._recording_started)
             wechat.finish_voice_mode(1)
@@ -663,51 +632,24 @@ class RecordingStateTests(unittest.TestCase):
         send_dx, send_dy = wechat.DEFAULTS["send"]
         self.assertEqual(points["open"], (1300 + open_dx, 900 + open_dy))
         self.assertEqual(points["send"], (1300 + send_dx, 900 + send_dy))
-        self.assertEqual(moved, [points["open"]])
         self.assertEqual(clicked, [points["open"], points["send"]])
         self.assertEqual(pressed, [])
         self.assertFalse(wechat._recording_started)
 
-    def test_a_click_that_does_not_start_recording_explains_both_causes(self) -> None:
-        clicked, moved, pressed = [], [], []
-        stuck = self.frame()  # idle toolbar, and it never changes
-        polls = []
-
-        def snapshot(hwnd):
-            polls.append(1)
-            return stuck
-
-        with mock.patch.object(wechat, "load_offsets", lambda: dict(wechat.DEFAULTS)), \
-             mock.patch.object(wechat, "client_geometry", lambda hwnd: self.CLIENT), \
-             mock.patch.object(wechat, "is_minimized", lambda hwnd: False), \
-             mock.patch.object(
-                 wechat, "force_canonical_size", lambda hwnd, size: tuple(size)
-             ), \
-             mock.patch.object(wechat, "HOVER_SETTLE_SEC", 0.0), \
-             mock.patch.object(wechat, "input_row_image", snapshot), \
-             mock.patch.object(wechat, "RECORDING_TIMEOUT_SEC", 0.0), \
-             mock.patch.object(windowing, "client_geometry", lambda hwnd: self.CLIENT), \
-             mock.patch.object(
-                 windowing, "virtual_screen_bounds", lambda: (0, 0, 2560, 1440)
-             ), \
-             mock.patch.object(
-                 wechat.pyautogui, "moveTo", lambda x, y: moved.append((x, y))
-             ), \
-             mock.patch.object(
-                 wechat.pyautogui, "click", lambda x, y: clicked.append((x, y))
-             ), \
-             mock.patch.object(
-                 wechat.pyautogui, "press", lambda key: pressed.append(key)
-             ):
+    def test_a_click_that_does_not_start_recording_explains_the_causes(self) -> None:
+        clicked, pressed = [], []
+        with ExitStack() as stack:
+            for manager in self.send_patches(clicked, pressed, starts=False):
+                stack.enter_context(manager)
             with self.assertRaises(wechat.CalibrationError) as caught:
                 wechat.enter_voice_mode(1)
 
         message = str(caught.exception)
-        self.assertIn("输入框", message)  # the draft case, which a user actually hit
+        self.assertIn("输入框", message)  # the draft case a user actually hit
         self.assertIn("校准坐标.bat", message)
+        self.assertIn("check_default_devices", message)
         self.assertFalse(wechat._recording_started)
         self.assertEqual(len(clicked), 1)  # it did click the voice button
-        self.assertGreaterEqual(len(polls), 1)  # and it looked before giving up
 
 
 if __name__ == "__main__":

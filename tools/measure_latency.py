@@ -27,7 +27,6 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import audio  # noqa: E402
-import wechat  # noqa: E402
 
 SAMPLE = ROOT / "samples" / "zh_reimu.wav"
 
@@ -135,23 +134,19 @@ def main() -> int:
     )
     print(f"      -> {len(candidates)} endpoint(s), {candidates[0].duration:.2f}s audio")
 
-    hwnds = wechat.find_wechat_windows()
     scan_ms = 0.0
-    if hwnds:
-        if wechat.input_row_image(hwnds[0]) is not None:
-            _, scan_ms = timed(
-                "input_row_image (one poll)",
-                lambda: wechat.input_row_image(hwnds[0]),
-                repeat=5,
-            )
-        else:
-            print("  WeChat is minimized or off the primary monitor;")
-            print("      -> snapshot not measured (restore WeChat and rerun)")
-    else:
-        print("  no WeChat window found; snapshot not measured")
+    try:
+        _, scan_ms = timed(
+            "capturing_process_names (one poll)",
+            audio.capturing_process_names,
+            repeat=5,
+        )
+    except Exception as error:
+        print(f"  cannot query the capture sessions: {error}")
+        print("      -> poll not measured")
 
     print("\n--- after the click (this becomes leading silence) ---")
-    print(f"  {'one input-row snapshot per poll':<46}{scan_ms:8.1f} ms")
+    print(f"  {'one capture-session query per poll':<46}{scan_ms:8.1f} ms")
     print(f"  {'playback call overhead':<46}{'see below':>11}")
 
     print("\n--- backend check under real conditions ---")
@@ -161,14 +156,14 @@ def main() -> int:
     print("  Summary")
     print("=" * 64)
     print(f"  audio preparation               : {prepare_ms:7.1f} ms   [runs before click]")
-    print(f"  confirmation scan               : {scan_ms:7.1f} ms   [after click]")
+    print(f"  recording-state poll            : {scan_ms:7.1f} ms   [after click]")
     print(f"  backend healthy on a worker     : {'yes' if backend_ok else 'NO':>7}")
     print()
     if not backend_ok:
         print("  FAIL: playback is not using the preferred backend.")
         return 1
     if scan_ms > 200:
-        print("  WARNING: the confirmation scan is slow; expect some leading silence.")
+        print("  WARNING: the recording-state poll is slow; expect leading silence.")
         return 1
     print("  OK.")
     return 0

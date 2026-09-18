@@ -20,22 +20,25 @@ How the controls are located
   calibrated once by ``tools/calibrate_target.py``: the voice button in the
   normal input toolbar, the round send button on the recording bar, and the
   cancel control a fixed distance to its left.
-* **Which state WeChat is in** is never read off the pixels. Entering recording
-  mode replaces the input toolbar with the recording bar, so the region is
-  compared with its own earlier self (:func:`windowing.changed_fraction`) - no
-  colour, no template, nothing that a WeChat update, a theme, a skin or dark
-  mode can invalidate. The same comparison decides when playback may start (the
-  moment the row changes) and whether a send actually finished.
+* **Which state WeChat is in** is never read off the screen. Windows keeps an
+  audio session list, and while WeChat records it holds an *active* capture
+  session on the endpoint it records from - so that is what this module asks
+  (:func:`audio.capturing_process_names`). No colours, no template matching, and
+  nothing that a hidden, occluded, off-monitor or non-repainting window can
+  invalidate. The same check decides when playback may start and whether a send
+  actually finished.
 * **Nothing is clicked blindly.** ``windowing.ensure_click_target`` checks every
-  coordinate against the client area first, and the cleanup touches the
-  recording controls only after this run has watched the recording bar appear -
-  Escape in an idle WeChat *minimizes the window*.
+  coordinate against the client area first, ``windowing.require_foreground``
+  checks the click will land in WeChat at all, and the cleanup touches the
+  recording controls only while WeChat really is capturing - Escape in an idle
+  WeChat *minimizes the window*.
 
-The colour test that used to live here came from ``AEVEC/wechat-tts-voice-bubble``
-and assumed the recording bar's send button was the only green thing in that
-region. A user with un-sent text in the input box proved otherwise: WeChat paints
-its own 「发送」 button green there, so the app refused to send and told them to
-cancel a recording that did not exist. See the README for the full story.
+An earlier version decided the state by counting WeChat-green pixels in a
+screenshot of the input row, which came from ``AEVEC/wechat-tts-voice-bubble``.
+That test assumed the recording bar's send button was the only green thing
+there; a user with un-sent text in the input box proved otherwise (WeChat paints
+its own 「发送」 button green there), and it also could not tell "not recording"
+from "window not repainting". See the README for the full story.
 
 SPDX-License-Identifier: MIT
 """
@@ -46,17 +49,15 @@ import logging
 import time
 from pathlib import Path
 
-import numpy as np
 import pyautogui
 
+import audio
 import windowing
 from windowing import (
     CalibrationError,
     MIN_WINDOW_HEIGHT,
     MIN_WINDOW_WIDTH,
     activate_window,
-    capture_region,
-    changed_fraction,
     client_capture_box,
     client_geometry,
     ensure_click_target,
@@ -85,40 +86,17 @@ DEFAULT_CANCEL_GAP = 203
 #: of offsets is only valid at the size it was measured at.
 DEFAULT_CLIENT_SIZE = (1200, 800)
 
-#: Region watched to tell WeChat's normal input toolbar from its recording bar,
-#: measured from the bottom-right corner of the client area. Only its geometry
-#: matters: nothing here looks at any particular colour, so a WeChat update that
-#: repaints or restyles the controls does not invalidate it.
-INPUT_ROW_WIDTH = 460
-INPUT_ROW_HEIGHT = 84
-
-#: Fraction of that region which must change before we believe the toolbar was
-#: replaced by the recording bar (or the other way round). Landing the pointer on
-#: a toolbar button moves a few percent of the pixels; the recording bar replaces
-#: most of the row, so the gap between the two is wide.
-#:
-#: Measured on WeChat 4.1.13.12 in dark mode at the default per-pixel threshold
-#: (24): toolbar <-> recording bar is 15.5%, moving the pointer onto the voice
-#: button is 0.0% (2.5% at a per-pixel threshold of 4). 12% sits between them,
-#: and the recording bar was recognised 121 ms after the click.
-INPUT_ROW_CHANGE_THRESHOLD = 0.12
-
-#: How long to wait for the recording bar to appear after clicking the voice
-#: button, and for the toolbar to come back after clicking send.
+#: How long to wait for WeChat to start capturing after clicking the voice
+#: button, and for it to stop after clicking send or cancel.
 RECORDING_TIMEOUT_SEC = 2.5
 SEND_TIMEOUT_SEC = 1.5
 
-#: Pause after moving the pointer onto the voice button, so that the button's
-#: hover highlight is already part of the baseline. This is before the click, so
-#: it costs nothing but wall-clock time.
-HOVER_SETTLE_SEC = 0.15
-
-#: How long to let Escape settle when clearing a recording bar that a failed
-#: attempt left behind.
+#: How long to let Escape settle when clearing a recording that a failed attempt
+#: left behind.
 RECORDING_CANCEL_SETTLE_SEC = 0.25
 
-#: Poll interval while waiting. One poll costs a screenshot (~40 ms), so that -
-#: not this number - is the real resolution.
+#: Poll interval while waiting. One poll asks Windows for the capture sessions
+#: (~30-50 ms), so that - not this number - is the real resolution.
 RECORDING_POLL_INTERVAL_SEC = 0.015
 
 OFFSETS_FILE = Path.home() / ".youkuli-chaspeak" / f"{KEY}_offsets.json"
@@ -130,10 +108,9 @@ DEFAULTS = {
     "client_size": DEFAULT_CLIENT_SIZE,
 }
 
-#: Whether *this process* clicked the voice button and then watched the input row
-#: turn into the recording bar. Only then may anything touch the recording
-#: controls again: pressing Escape in an idle WeChat minimizes the window, and a
-#: stray cancel click would land in the middle of the input toolbar.
+#: Whether *this process* clicked the voice button and then saw WeChat start
+#: capturing. Only then may anything touch the recording controls again: pressing
+#: Escape in an idle WeChat minimizes the window instead of cancelling anything.
 _recording_started = False
 
 
@@ -236,66 +213,42 @@ def wechat_voice_control_points(
     }
 
 
-# --- telling the toolbar from the recording bar -----------------------------
+# --- is WeChat recording? ---------------------------------------------------
+#
+# Windows knows. While WeChat records it holds an *active* capture session on the
+# endpoint it records from, and asking for that is immune to everything that
+# broke the previous screenshot-based test: a hidden window, an occluded one, one
+# on another monitor, a window that stopped repainting, dark mode, a restyled
+# button, a different WeChat version. See audio.capturing_process_names().
 
 
-def input_row_box(hwnd: int) -> tuple[int, int, int, int] | None:
-    """The bottom-right of the client area, where WeChat draws its input row.
-
-    Clipped to the primary monitor, because that is the only thing pyautogui can
-    photograph. Returns ``None`` when the window is not on it.
-    """
-    left, top, _width, _height, right, bottom = client_geometry(hwnd)
-    primary_width, primary_height = windowing.primary_screen_size()
-    if right <= 0 or left >= primary_width or bottom <= 0 or top >= primary_height:
-        return None
-
-    box_left = max(0, right - INPUT_ROW_WIDTH)
-    box_top = max(0, bottom - INPUT_ROW_HEIGHT)
-    box_right = min(primary_width, right)
-    box_bottom = min(primary_height, bottom)
-    if box_right - box_left < 40 or box_bottom - box_top < 20:
-        return None
-    return box_left, box_top, box_right, box_bottom
+def recording_now() -> bool:
+    """Whether WeChat currently holds an active capture session."""
+    return audio.is_capturing(PROCESS_NAMES)
 
 
-def input_row_image(hwnd: int) -> np.ndarray | None:
-    """A photograph of the input row, or ``None`` if one cannot be taken."""
-    box = input_row_box(hwnd)
-    if box is None:
-        return None
-    return capture_region(box)
-
-
-def input_row_replaced(baseline: np.ndarray, current: np.ndarray) -> bool:
-    """Whether the input row now differs from what ``baseline`` photographed.
-
-    True means the toolbar and the recording bar were swapped - in either
-    direction. What either of them looks like is deliberately not this
-    function's business: no colour, no template, nothing a WeChat update or a
-    theme change can invalidate.
-    """
-    return changed_fraction(baseline, current) >= INPUT_ROW_CHANGE_THRESHOLD
-
-
-def wait_for_input_row(
-    hwnd: int,
-    baseline: np.ndarray,
-    *,
-    changed: bool = True,
-    timeout: float = RECORDING_TIMEOUT_SEC,
-) -> bool:
-    """Poll until the input row differs from (or matches) ``baseline``.
+def wait_for_recording(timeout: float = RECORDING_TIMEOUT_SEC) -> bool:
+    """Poll until WeChat starts capturing the microphone.
 
     Polling rather than sleeping a fixed amount is what keeps the silence at the
-    start of a message short: playback starts the moment the row actually
-    changes, not after a guess. The same wait with ``changed=False`` is how a
-    finished send is recognised.
+    start of a message short: playback starts the moment WeChat is really
+    recording - and "really recording" is the capture session, not a pixel
+    somewhere on screen.
     """
     deadline = time.monotonic() + timeout
     while True:
-        current = input_row_image(hwnd)
-        if current is not None and input_row_replaced(baseline, current) == changed:
+        if recording_now():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(RECORDING_POLL_INTERVAL_SEC)
+
+
+def wait_for_recording_end(timeout: float = SEND_TIMEOUT_SEC) -> bool:
+    """Poll until WeChat stops capturing, i.e. sent or cancelled the recording."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if not recording_now():
             return True
         if time.monotonic() >= deadline:
             return False
@@ -309,10 +262,10 @@ def enter_voice_mode(hwnd: int) -> dict[str, tuple[int, int]]:
     """Click WeChat into recording mode and start playback as early as possible.
 
     WeChat's voice mode is a toggle, so a previous failure can in principle leave
-    the recording bar up. Nothing here tries to detect that: every click is
+    its recording bar up. Nothing here tries to detect that: every click is
     validated before it happens, and :func:`leave_recording_mode` only acts once
-    this run has watched the bar appear. Returns the moment the input row has
-    become the recording bar, so the caller can start playback immediately.
+    this run has seen WeChat start capturing. Returns the moment that happens, so
+    the caller can start playback immediately.
     """
     global _recording_started
 
@@ -332,74 +285,66 @@ def enter_voice_mode(hwnd: int) -> dict[str, tuple[int, int]]:
 
     points = wechat_voice_control_points(hwnd, offsets=offsets)
     ensure_click_target(hwnd, points["open"], "微信「语音」按钮")
-
-    # Park the pointer on the button first: its hover highlight belongs in the
-    # baseline, or it would look exactly like the input row changing.
-    pyautogui.moveTo(*points["open"])
-    time.sleep(HOVER_SETTLE_SEC)
-    baseline = input_row_image(hwnd)
-    if baseline is None:
-        raise RuntimeError(
-            "读不到微信输入栏的画面，无法确认是否进入录音模式。\n"
-            "请确认微信窗口在主显示器上、没有最小化，然后重试。"
-        )
+    # The window was activated further up the call chain; if anything took the
+    # foreground back since then, this click would land in that window instead.
+    windowing.require_foreground(PROCESS_NAMES, LABEL)
 
     _recording_started = False
     click_at = time.monotonic()
     pyautogui.click(*points["open"])
 
-    if not wait_for_input_row(
-        hwnd, baseline, changed=True, timeout=RECORDING_TIMEOUT_SEC
-    ):
+    if not wait_for_recording(RECORDING_TIMEOUT_SEC):
         _left, _top, _width, _height, right, bottom = client_geometry(hwnd)
         dx = points["open"][0] - right
         dy = points["open"][1] - bottom
         raise CalibrationError(
-            "点击后微信没有进入语音录制模式。\n\n"
-            f"程序点击的是窗口右下角偏移 ({dx}, {dy}) 处，"
-            f"即屏幕坐标 ({points['open'][0]}, {points['open'][1]})。\n\n"
-            "先看输入框里有没有还没发出去的文字：有的话，微信在那个位置显示的是"
-            "「发送」按钮而不是「语音」按钮，清空输入框再试。\n"
-            "输入框是空的，就说明那个位置的坐标需要重新标定："
-            "请双击 tools\\校准坐标.bat 重新标定。"
+            "点击后微信没有开始录音。\n\n"
+            f"程序点击的是窗口右下角偏移 ({dx}, {dy}) 处，即屏幕坐标 "
+            f"({points['open'][0]}, {points['open'][1]})，但 "
+            f"{RECORDING_TIMEOUT_SEC:.1f} 秒内没有检测到微信占用麦克风。\n\n"
+            "请依次检查：\n"
+            f"  1) 输入框里有没有还没发出去的文字 —— 有的话那里显示的是「发送」"
+            "按钮而不是「语音」按钮，清空输入框再试；\n"
+            "  2) 那个位置是不是「语音」按钮（不是，就双击 tools\\校准坐标.bat "
+            "重新标定）；\n"
+            "  3) 录音端点能不能用 —— 别的程序（录音软件、OBS、语音通话）占着 "
+            f"{audio.DEFAULT_CAPTURE_DEVICE_NAME} 时微信录不了音，"
+            "`python tools\\check_default_devices.py` 能看到端点状态。"
         )
 
     _recording_started = True
     logging.info(
-        "点击语音按钮后 %.0f ms 输入栏已切换为录音条",
+        "点击语音按钮后 %.0f ms 检测到微信开始录音",
         (time.monotonic() - click_at) * 1000,
     )
     return points
 
 
 def finish_voice_mode(hwnd: int) -> None:
-    """Click the recording bar's send button and wait for the toolbar to return."""
+    """Click the recording bar's send button and wait for capture to stop."""
     global _recording_started
 
     offsets = load_offsets()
     _left, _top, _width, _height, right, bottom = client_geometry(hwnd)
     send_point = (right + int(offsets["send"][0]), bottom + int(offsets["send"][1]))
     ensure_click_target(hwnd, send_point, "微信「发送」按钮")
+    windowing.require_foreground(PROCESS_NAMES, LABEL)
 
-    baseline = input_row_image(hwnd)
     pyautogui.click(*send_point)
-    if baseline is not None and wait_for_input_row(
-        hwnd, baseline, changed=True, timeout=SEND_TIMEOUT_SEC
-    ):
+    if wait_for_recording_end(SEND_TIMEOUT_SEC):
         _recording_started = False
         return
-    # Still the recording bar (or unreadable): leave the flag set, so the
-    # caller's cleanup cancels instead of leaving WeChat recording.
-    raise RuntimeError("点击发送后微信仍处于录音模式，发送可能未完成。")
+    # Still capturing: leave the flag set, so the caller's cleanup cancels
+    # instead of leaving WeChat recording.
+    raise RuntimeError("点击发送后微信仍在录音，发送可能未完成。")
 
 
 def leave_recording_mode(hwnd: int) -> None:
     """Best-effort cleanup for a failed send. Never raises.
 
-    Does nothing unless this run watched the recording bar appear. An idle WeChat
-    has nothing to clean up, and Escape there *minimizes the window* rather than
-    cancelling anything - and a stray cancel click would land in the middle of
-    the input toolbar.
+    Only acts when this run saw WeChat start capturing *and* it still is. An idle
+    WeChat has nothing to clean up, and Escape there *minimizes the window* rather
+    than cancelling anything.
 
     Runs inside a ``finally`` block, so an exception here would mask the original
     failure.
@@ -410,6 +355,12 @@ def leave_recording_mode(hwnd: int) -> None:
     _recording_started = False
 
     try:
+        if not recording_now():
+            return  # it stopped on its own, e.g. WeChat hit its length limit
+    except Exception:
+        logging.debug("查询录音状态失败，按仍在录音处理", exc_info=True)
+
+    try:
         offsets = load_offsets()
         _left, _top, _width, _height, right, bottom = client_geometry(hwnd)
         cancel_point = (
@@ -417,21 +368,22 @@ def leave_recording_mode(hwnd: int) -> None:
             bottom + int(offsets["send"][1]),
         )
         ensure_click_target(hwnd, cancel_point, "微信「取消录音」按钮")
-        baseline = input_row_image(hwnd)
+        windowing.require_foreground(PROCESS_NAMES, LABEL)
         pyautogui.click(*cancel_point)
-        if baseline is not None and wait_for_input_row(
-            hwnd, baseline, changed=True, timeout=RECORDING_TIMEOUT_SEC
-        ):
+        if wait_for_recording_end(RECORDING_TIMEOUT_SEC):
             return
-        logging.warning("点击取消后录音条似乎还在，改用 Escape")
+        logging.warning("点了取消按钮，但微信仍在录音，改用 Escape")
     except Exception:
         logging.exception("取消微信录音模式失败")
 
-    # Only reached while this run believes WeChat is recording, which is the one
-    # state where Escape cancels the recording instead of minimizing the window.
+    # Escape only makes sense while WeChat really is capturing - which the check
+    # above just confirmed - because otherwise it minimizes the window.
     try:
+        windowing.require_foreground(PROCESS_NAMES, LABEL)
         pyautogui.press("escape")
         time.sleep(RECORDING_CANCEL_SETTLE_SEC)
+        if not wait_for_recording_end(RECORDING_TIMEOUT_SEC):
+            logging.error("微信可能还在录音，请手动点掉录音条")
     except Exception:
         logging.debug("Escape 兜底取消失败", exc_info=True)
 
@@ -458,10 +410,6 @@ __all__ = [
     "DEFAULT_CLIENT_SIZE",
     "DEFAULT_OPEN_OFFSET",
     "DEFAULT_SEND_OFFSET",
-    "HOVER_SETTLE_SEC",
-    "INPUT_ROW_CHANGE_THRESHOLD",
-    "INPUT_ROW_HEIGHT",
-    "INPUT_ROW_WIDTH",
     "KEY",
     "LABEL",
     "MIN_WINDOW_HEIGHT",
@@ -479,14 +427,13 @@ __all__ = [
     "find_wechat_windows",
     "finish_voice_mode",
     "force_canonical_size",
-    "input_row_box",
-    "input_row_image",
-    "input_row_replaced",
     "leave_recording_mode",
     "load_offsets",
     "preflight",
+    "recording_now",
     "save_offsets",
     "voice_control_points",
-    "wait_for_input_row",
+    "wait_for_recording",
+    "wait_for_recording_end",
     "wechat_voice_control_points",
 ]
