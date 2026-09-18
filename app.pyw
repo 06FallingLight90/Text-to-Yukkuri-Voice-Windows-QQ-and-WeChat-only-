@@ -1498,11 +1498,12 @@ class WidgetApp:
         self.root.title(APP_NAME)
         self.root.iconbitmap(default=str(APP_ICON_PATH))
         self.root.geometry(self.config.geometry)
-        # 600 rather than 550: the column above the pinned footer needs roughly
-        # this much before the input box starts getting squeezed, and Tk clamps
-        # even an explicitly restored geometry up to the minimum - so saved
-        # 500x560 windows from older versions are lifted automatically.
-        self.root.minsize(480, 600)
+        # 620 rather than 550: the column above the pinned footer needs roughly
+        # this much before the input box starts getting squeezed - and that footer
+        # now ends with its own 「帮助」 row, which needs ~20 px more than the
+        # hint line alone did. Tk clamps even an explicitly restored geometry up
+        # to the minimum, so saved 500x560 windows are lifted automatically.
+        self.root.minsize(480, 620)
         self.root.configure(fg_color=SURFACE)
         self.busy = False
         self.preflight_ok = False
@@ -1867,25 +1868,24 @@ class WidgetApp:
         )
         self.send_button.pack(side="right", fill="x", expand=True, padx=(12, 0))
 
-        bottom_row = ctk.CTkFrame(footer, fg_color="transparent")
-        bottom_row.pack(fill="x", pady=(10, 0))
         self.target_hint = ctk.CTkLabel(
-            bottom_row,
+            footer,
             text="",
             text_color=MUTED,
             font=ctk.CTkFont(FONT_FAMILY, 10),
         )
-        self.target_hint.pack(side="left", padx=2)
-        # Underlined rather than a button, so it reads as a link at the bottom of
-        # the page instead of competing with 「发送语音」.
+        self.target_hint.pack(anchor="w", pady=(10, 0), padx=2)
+        # Its own row, under everything else. Side by side with the hint it got
+        # squeezed out of the window at the minimum size - the hint is long and
+        # won the space - and a link nobody can see is worse than no link.
         self.help_link = ctk.CTkLabel(
-            bottom_row,
+            footer,
             text="帮助",
             text_color=PRIMARY,
             cursor="hand2",
             font=ctk.CTkFont(FONT_FAMILY, 11, underline=True),
         )
-        self.help_link.pack(side="right", padx=2)
+        self.help_link.pack(anchor="w", pady=(2, 0), padx=2)
         self.help_link.bind("<Button-1>", self.open_help)
         self.update_target_hint()
         self.update_send_button()
