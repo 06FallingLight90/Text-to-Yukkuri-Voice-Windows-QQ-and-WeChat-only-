@@ -107,13 +107,6 @@ DEFAULTS = {
 _holding = False
 
 
-def is_holding() -> bool:
-    return _holding
-
-
-# --- configuration ----------------------------------------------------------
-
-
 def load_offsets() -> dict:
     return windowing.load_offsets(OFFSETS_FILE, DEFAULTS)
 
@@ -413,7 +406,6 @@ __all__ = [
     "find_qq_windows",
     "finish_voice_mode",
     "force_canonical_size",
-    "is_holding",
     "leave_recording_mode",
     "load_offsets",
     "mode_for_title",

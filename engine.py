@@ -1,10 +1,12 @@
 """Orchestration for YouKuLiChaSpeak.
 
-Ties the three independent pieces together:
+Ties the independent pieces together:
 
     synth_client  -- text  -> WAV  (offline, AquesTalk via WebAssembly)
     audio         -- WAV   -> VB-CABLE playback endpoint
-    wechat        -- drive WeChat's own recording controls
+    targets       -- drive the chat client's own recording controls;
+                     wechat.py and qq.py sit behind one interface, and engine
+                     never talks to either of them directly
 
 The send sequence and the pre-flight checks follow
 AEVEC/wechat-tts-voice-bubble (MIT). See THIRD_PARTY_NOTICES.md.
@@ -549,10 +551,13 @@ class VoiceEngine:
         on_progress=None,
         save_wav: Path | None = None,
     ) -> dict:
-        """Synthesize ``text`` and deliver it as a WeChat voice bubble.
+        """Synthesize ``text`` and deliver it as a voice message.
+
+        The target is whatever ``config.target`` selects (WeChat or QQ); this
+        method only ever touches it through the module in ``targets``.
 
         Returns a dict with ``duration``, ``notation`` and ``saved``. Raises on
-        any failure, having already restored WeChat to a non-recording state.
+        any failure, having already restored the target to a non-recording state.
         """
         def progress(message: str) -> None:
             logging.info(message)

@@ -568,22 +568,28 @@ YukuriSpeak/
 ├─ engine.py                    编排层：翻译 → 合成 → 校验 → 切窗口 → 录音 → 播放 → 发送
 ├─ targets.py                   目标注册表（微信 / QQ），engine 只面向接口
 ├─ windowing.py                 共用 Win32：找窗口、激活、固定尺寸、截图、图像差分
+├─ hotkeys.py                   全局快捷键字符串 ↔ Windows 热键（无 GUI 依赖）
 ├─ wechat.py                    微信：点按录音 + 绿色圆钮检测
 ├─ qq.py                        QQ：长按录音、松开发送、Esc 取消
-├─ translate.py                 中→日翻译（有道 / OpenAI 兼容接口，仅标准库）
+├─ translate.py                 中→日翻译 + 英文读音（有道 / OpenAI 兼容接口，仅标准库）
 ├─ audio.py                     VB-CABLE 设备发现、重采样、多后端回退播放
 ├─ synth_client.py              Node 合成 sidecar 的常驻客户端
 ├─ synth/
 │  ├─ synthesize.mjs            离线合成 CLI / 常驻服务（JSON over stdio）
 │  ├─ package.json
 │  └─ vendor/yukkuri-mandarin/  中文→假名+声调转换（MIT，已署名）
-├─ tools/
+├─ tests/                       纯逻辑单元测试（unittest，无窗口/无设备/无网络）
+│  └─ test_units.py             快捷键解析、窗口尺寸校验、引号剥离、偏移文件读取
+├─ tools/                       需要这台机器的脚本，按需手动运行
 │  ├─ calibrate_target.py       交互式坐标标定（微信 / QQ）
 │  ├─ 校准坐标.bat              一键标定
 │  ├─ check_repo.py             仓库自检（bat 行尾 / 编译 / 目标接口一致性）
+│  ├─ check_default_devices.py  查看默认录音/播放设备与自动切换是否可用
+│  ├─ test_translation.py       翻译请求构造自测（本地 mock，无需真实 key）
+│  ├─ bench_thinking.py         大模型思考强度对翻译耗时的影响（会真的调用接口）
 │  ├─ measure_latency.py        发送路径延迟预算 + 音频后端检查
-│  ├─ measure_leading_silence.py 端到端开头静音测量
-│  └─ test_translation.py       翻译请求构造自测（用本地 mock，无需真实 key）
+│  └─ measure_leading_silence.py 端到端开头静音测量
+├─ run_checks.bat               一键跑完 tests/ 与 tools/check_repo.py
 ├─ assets/                      图标
 ├─ requirements.txt
 ├─ LICENSE                      MIT
@@ -598,9 +604,9 @@ YukuriSpeak/
 | --- | --- | --- |
 | `synth_client` / `synth/` | 文字 → WAV | 任何别的 TTS（只要产出 WAV） |
 | `audio.py` | WAV → VB-CABLE | 别的虚拟声卡（改设备名即可） |
-| `wechat.py` | 驱动微信录音控件 | 别的 IM（QQ 等），或别的微信版本布局 |
+| `targets.py` + `wechat.py` / `qq.py` | 驱动客户端的录音控件（一个接口，两套实现） | 别的 IM，或别的客户端版本布局 |
 
-`engine.VoiceEngine.send_voice()` 是唯一的上层入口，GUI 和命令行都走它，所以两条路径不会各自跑偏。
+`engine.VoiceEngine.send_voice()` 是唯一的上层入口，GUI 和命令行都走它，所以两条路径不会各自跑偏；它只通过 `targets` 接口接触客户端，不直接认识微信或 QQ。
 
 ### 合成 sidecar 协议
 

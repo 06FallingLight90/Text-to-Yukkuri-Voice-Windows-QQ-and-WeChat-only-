@@ -1,8 +1,8 @@
 """The two things that go online: "中转日" translation, and reading English.
 
 Only translation goes online; speech synthesis stays fully offline. It runs
-before WeChat is touched, so its latency never becomes silence at the start of a
-recorded message - it only affects how long the send takes.
+before the chat client is touched, so its latency never becomes silence at the
+start of a recorded message - it only affects how long the send takes.
 
 Two features use this module:
 

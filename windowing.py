@@ -262,8 +262,24 @@ def force_client_size(hwnd: int, size: tuple[int, int]) -> tuple[int, int]:
 # --- control offsets --------------------------------------------------------
 
 
+def _is_number(value: object) -> bool:
+    """A JSON number a coordinate can be built from.
+
+    ``bool`` is not one, even though Python says it is an ``int``: a file with
+    ``true`` where a pixel offset belongs is a corrupted file, not a coordinate.
+    """
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def load_offsets(path: Path, defaults: dict) -> dict:
-    """Read calibrated offsets from ``path``, falling back to ``defaults``."""
+    """Read calibrated offsets from ``path``, falling back to ``defaults``.
+
+    Every field is checked against the type of its default, because this file is
+    plain JSON in the user's profile: it can be hand-edited, truncated, or left
+    behind by another version. Anything that does not fit keeps its default -
+    a wrong coordinate would silently click somewhere else in the chat client,
+    which is exactly what calibration exists to prevent.
+    """
     offsets = dict(defaults)
     if not path.is_file():
         return offsets
@@ -272,15 +288,22 @@ def load_offsets(path: Path, defaults: dict) -> dict:
     except Exception:
         logging.exception("读取控件坐标失败，改用默认值")
         return offsets
+    if not isinstance(data, dict):
+        logging.warning("控件坐标文件不是对象，改用默认值：%s", path)
+        return offsets
 
     for key, fallback in defaults.items():
         value = data.get(key)
         if isinstance(fallback, (list, tuple)):
-            if isinstance(value, (list, tuple)) and len(value) == 2:
+            if (
+                isinstance(value, (list, tuple))
+                and len(value) == 2
+                and all(_is_number(item) for item in value)
+            ):
                 offsets[key] = (int(value[0]), int(value[1]))
         elif isinstance(fallback, int):
-            if isinstance(value, int):
-                offsets[key] = value
+            if _is_number(value):
+                offsets[key] = int(value)
         elif isinstance(fallback, str):
             # Not cosmetic: QQ records which layout its coordinates were measured
             # in, and silently dropping that would leave it guessing again.
@@ -346,22 +369,13 @@ def capture_region(box: tuple[int, int, int, int]) -> np.ndarray | None:
     return np.asarray(image.convert("RGB"))
 
 
-def mean_absolute_difference(first: np.ndarray, second: np.ndarray) -> float:
-    """Mean per-channel absolute difference between two same-shaped images."""
-    if first.shape != second.shape or first.size == 0:
-        return 0.0
-    return float(
-        np.abs(first.astype(np.int16) - second.astype(np.int16)).mean()
-    )
-
-
 def changed_fraction(
     first: np.ndarray, second: np.ndarray, *, per_pixel_threshold: int = 24
 ) -> float:
     """Fraction of pixels that changed noticeably between two images.
 
-    Preferred over :func:`mean_absolute_difference` for spotting an overlay that
-    only covers part of the region: a mean over a large area dilutes a localized
+    Preferred over a mean absolute difference for spotting an overlay that only
+    covers part of the region: a mean over a large area dilutes a localized
     change, while this counts it directly.
     """
     if first.shape != second.shape or first.size == 0:
@@ -388,7 +402,6 @@ __all__ = [
     "is_maximized",
     "is_minimized",
     "load_offsets",
-    "mean_absolute_difference",
     "primary_screen_size",
     "require_foreground",
     "save_offsets",

@@ -7,10 +7,11 @@ See THIRD_PARTY_NOTICES.md.
 The whole trick this module implements:
 
     WAV file -> VB-CABLE "CABLE Input" (playback) -> "CABLE Output" (microphone)
-             -> WeChat records it -> native voice bubble
+             -> the chat client records it -> native voice bubble
 
-Nothing here touches the WeChat process; the audio simply arrives through the
-same microphone WeChat was already told to use.
+Nothing here touches the chat client's process; the audio simply arrives through
+the same microphone it was already told to use. Which client that is (WeChat or
+QQ) is decided in ``targets``, not here.
 
 SPDX-License-Identifier: MIT
 """
@@ -27,7 +28,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import psutil
 import sounddevice as sd
 import soundfile as sf
 
@@ -36,9 +36,6 @@ DEFAULT_DEVICE_NAME = "CABLE Input"
 
 #: Newer VB-CABLE / VoiceMeeter releases renamed the endpoint; accept those too.
 FALLBACK_DEVICE_NAMES = ("CABLE In 16ch", "VB-Audio Point")
-
-#: WeChat 4.x ships as weixin.exe, 3.x as wechat.exe.
-WECHAT_PROCESS_NAMES = {"weixin.exe", "wechat.exe"}
 
 #: WeChat's hard limit on a single voice message.
 MAX_VOICE_SECONDS = 58.0
@@ -182,27 +179,6 @@ def resample_linear(audio: np.ndarray, source_rate: int, target_rate: int) -> np
     return np.stack(channels, axis=1).astype(np.float32, copy=False)
 
 
-def foreground_process_name() -> str:
-    """Lower-cased executable name owning the foreground window."""
-    hwnd = ctypes.windll.user32.GetForegroundWindow()
-    process_id = ctypes.c_ulong()
-    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
-    try:
-        return psutil.Process(process_id.value).name().casefold()
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return ""
-
-
-def require_wechat_focused() -> None:
-    """Refuse to act unless WeChat owns the foreground window."""
-    process_name = foreground_process_name()
-    if process_name not in WECHAT_PROCESS_NAMES:
-        raise RuntimeError(
-            "当前前台窗口不是微信，已取消发送以避免发错窗口。"
-            "请打开目标聊天并保持微信在最前面后重试。"
-        )
-
-
 def current_session_name() -> str:
     """Windows session name, e.g. ``Console`` or ``RDP-Tcp#12``."""
     session_id = ctypes.c_ulong()
@@ -318,23 +294,6 @@ def prepare_audio(
     target_rate = int(round(float(device["default_samplerate"])))
     audio = resample_linear(audio, int(source_rate), target_rate)
     return audio, target_rate, duration
-
-
-def play_audio_with_fallback(
-    wav_path: Path,
-    device_name: str = DEFAULT_DEVICE_NAME,
-    max_seconds: float = MAX_VOICE_SECONDS,
-) -> tuple[float, int, dict, int]:
-    """Prepare and play in one call.
-
-    Convenient for one-off playback (testing a WAV), but **do not** use this on
-    the send path: the preparation inside it costs tens of milliseconds, and on
-    the send path that time is recorded as silence. Use
-    :func:`prepare_output_candidates` and :func:`play_candidates` instead.
-    """
-    candidates = prepare_output_candidates(wav_path, device_name, max_seconds)
-    chosen = play_candidates(candidates)
-    return chosen.duration, chosen.device_index, dict(chosen.device), chosen.sample_rate
 
 
 @dataclass(frozen=True)
@@ -957,7 +916,6 @@ __all__ = [
     "MAX_VOICE_SECONDS",
     "PENDING_SWAP_FILE",
     "SWAP_ROLES",
-    "WECHAT_PROCESS_NAMES",
     "DefaultCaptureSwap",
     "PreparedPlayback",
     "ROLE_COMMUNICATIONS",
@@ -971,10 +929,8 @@ __all__ = [
     "default_render_name",
     "find_output_device",
     "find_output_devices",
-    "foreground_process_name",
     "list_capture_endpoints",
     "list_output_devices",
-    "play_audio_with_fallback",
     "play_candidates",
     "play_wav_on_speakers",
     "prepare_audio",
@@ -982,7 +938,6 @@ __all__ = [
     "require_cable_microphone",
     "require_local_audio_session",
     "require_switchable_cable",
-    "require_wechat_focused",
     "resample_linear",
     "restore_pending_capture_swap",
     "set_default_capture_endpoint",
