@@ -333,12 +333,12 @@ def calibrate_wechat(hwnd: int, geometry) -> int:
     open_offset = capture_offset("微信输入框工具栏里的「话筒 / 语音」按钮", 10, reference)
 
     print("\n" + "-" * 62)
-    print("第 2 步：绿色发送按钮")
+    print("第 2 步：录音条上的发送按钮")
     print("-" * 62)
     print("请在这段时间内完成两件事：")
     print("  1) 点击刚才那个语音按钮，让微信进入录音模式")
-    print("  2) 把鼠标移到右侧那个绿色圆形「发送」按钮上停住")
-    send_offset = capture_offset("绿色圆形发送按钮", 20, reference)
+    print("  2) 把鼠标移到录音条右侧那个圆形「发送」按钮上停住")
+    send_offset = capture_offset("录音条右侧的圆形发送按钮", 20, reference)
 
     print("\n" + "-" * 62)
     print("第 3 步：取消按钮")

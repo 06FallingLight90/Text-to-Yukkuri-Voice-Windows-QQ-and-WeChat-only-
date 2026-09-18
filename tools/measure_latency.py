@@ -138,21 +138,20 @@ def main() -> int:
     hwnds = wechat.find_wechat_windows()
     scan_ms = 0.0
     if hwnds:
-        box = wechat.scan_box(hwnds[0])
-        if box:
+        if wechat.input_row_image(hwnds[0]) is not None:
             _, scan_ms = timed(
-                "find_recording_send_point (one scan)",
-                lambda: wechat.find_recording_send_point(hwnds[0]),
+                "input_row_image (one poll)",
+                lambda: wechat.input_row_image(hwnds[0]),
                 repeat=5,
             )
         else:
             print("  WeChat is minimized or off the primary monitor;")
-            print("      -> scan not measured (restore WeChat and rerun)")
+            print("      -> snapshot not measured (restore WeChat and rerun)")
     else:
-        print("  no WeChat window found; scan not measured")
+        print("  no WeChat window found; snapshot not measured")
 
     print("\n--- after the click (this becomes leading silence) ---")
-    print(f"  {'one scan to confirm recording':<46}{scan_ms:8.1f} ms")
+    print(f"  {'one input-row snapshot per poll':<46}{scan_ms:8.1f} ms")
     print(f"  {'playback call overhead':<46}{'see below':>11}")
 
     print("\n--- backend check under real conditions ---")
