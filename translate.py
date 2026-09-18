@@ -61,6 +61,9 @@ DEFAULT_OPENAI_MODEL = "deepseek-chat"
 #: models to answer directly; the levels map to OpenAI's ``reasoning_effort``.
 DEFAULT_OPENAI_REASONING = "default"
 REASONING_OPTIONS: tuple[str, ...] = ("default", "off", "low", "medium", "high")
+#: The options that actually ask a model to think, and therefore the only ones
+#: that get the longer deadline.
+THINKING_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 REASONING_LABELS: dict[str, str] = {
     "default": "不干预（跟随接口默认）",
     "off": "禁用思考",
@@ -302,7 +305,12 @@ def translate_openai(
         raise TranslationError("大模型翻译需要填写模型名。")
     if reasoning not in REASONING_OPTIONS:
         reasoning = DEFAULT_OPENAI_REASONING
-    if reasoning != "default":
+    if reasoning in THINKING_LEVELS:
+        # Only a model that was *told to think* gets the longer deadline: a
+        # reasoning pass can easily outlast a plain chat call. "禁用思考" gets no
+        # extension on purpose - the whole point of it is a fast answer, so if
+        # the request still stalls it should fail at the normal deadline rather
+        # than block the send for a minute and a half.
         timeout = max(timeout, REASONING_TIMEOUT_SEC)
 
     url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
@@ -328,7 +336,7 @@ def translate_openai(
     if reasoning == "off":
         body["enable_thinking"] = False
         body["thinking"] = {"type": "disabled"}
-    elif reasoning in ("low", "medium", "high"):
+    elif reasoning in THINKING_LEVELS:
         body["reasoning_effort"] = reasoning
 
     payload = _post_json(
@@ -576,6 +584,7 @@ __all__ = [
     "READING_PROVIDERS",
     "REASONING_LABELS",
     "REASONING_OPTIONS",
+    "THINKING_LEVELS",
     "TranslationError",
     "TranslationResult",
     "can_read_english",

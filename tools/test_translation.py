@@ -285,6 +285,38 @@ def main() -> int:
         finally:
             think_server.shutdown()
 
+        print("\n=== 超时：只有真的要求模型思考才延长 ===")
+        seen_timeouts: dict = {}
+        original_post_json = translate._post_json
+
+        def spy(url, payload, *, headers=None, timeout=translate.REQUEST_TIMEOUT_SEC):
+            seen_timeouts["timeout"] = timeout
+            return {"choices": [{"message": {"content": "译文"}}]}
+
+        translate._post_json = spy
+        try:
+            for mode, extended in (
+                ("default", False),
+                ("off", False),
+                ("low", True),
+                ("medium", True),
+                ("high", True),
+            ):
+                translate.translate_openai(
+                    "你好", "http://127.0.0.1:1", "k", "m", reasoning=mode
+                )
+                got = seen_timeouts["timeout"]
+                want = (
+                    translate.REASONING_TIMEOUT_SEC if extended
+                    else translate.REQUEST_TIMEOUT_SEC
+                )
+                print(f"  {mode:8s} timeout={got:.0f}s（期望 {want:.0f}s）")
+                if got != want:
+                    failures += 1
+                    print(f"  FAIL: {mode} used {got}, expected {want}")
+        finally:
+            translate._post_json = original_post_json
+
         print("\n=== error handling ===")
         # A Youdao error code must surface with a readable message.
         class ErrHandler(MockHandler):
