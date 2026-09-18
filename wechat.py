@@ -96,6 +96,11 @@ INPUT_ROW_HEIGHT = 84
 #: replaced by the recording bar (or the other way round). Landing the pointer on
 #: a toolbar button moves a few percent of the pixels; the recording bar replaces
 #: most of the row, so the gap between the two is wide.
+#:
+#: Measured on WeChat 4.1.13.12 in dark mode at the default per-pixel threshold
+#: (24): toolbar <-> recording bar is 15.5%, moving the pointer onto the voice
+#: button is 0.0% (2.5% at a per-pixel threshold of 4). 12% sits between them,
+#: and the recording bar was recognised 121 ms after the click.
 INPUT_ROW_CHANGE_THRESHOLD = 0.12
 
 #: How long to wait for the recording bar to appear after clicking the voice
