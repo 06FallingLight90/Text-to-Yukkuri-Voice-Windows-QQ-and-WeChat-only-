@@ -177,7 +177,23 @@ class OffsetFileTests(unittest.TestCase):
 
     def test_corrupt_file_gives_the_defaults(self) -> None:
         self.path.write_text("{ this is not json", encoding="utf-8")
-        self.assertEqual(windowing.load_offsets(self.path, self.defaults), self.defaults)
+        # The bad file must be logged, not raised - asserting the log keeps the
+        # traceback out of the test output and checks that it is reported.
+        with self.assertLogs(level="ERROR") as logged:
+            self.assertEqual(
+                windowing.load_offsets(self.path, self.defaults), self.defaults
+            )
+        self.assertIn("读取控件坐标失败", "\n".join(logged.output))
+
+    def test_wrong_types_are_rejected_without_crashing(self) -> None:
+        """The bug this test was written for: a string coordinate used to raise."""
+        self.path.write_text(
+            json.dumps({"record": ["不是数字", "不是"], "client_size": [640, 480]}),
+            encoding="utf-8",
+        )
+        loaded = windowing.load_offsets(self.path, self.defaults)
+        self.assertEqual(tuple(loaded["record"]), (10, 20))
+        self.assertEqual(tuple(loaded["client_size"]), (640, 480))
 
     def test_saved_values_round_trip(self) -> None:
         custom = dict(self.defaults)

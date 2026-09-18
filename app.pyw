@@ -187,13 +187,21 @@ class NotifyIconData(ctypes.Structure):
         ("dwInfoFlags", wintypes.DWORD),
     ]
 
-CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    encoding="utf-8",
-)
+def configure_logging() -> None:
+    """Point the log at the user's config directory.
+
+    Called from the entry point rather than at import time: importing a module
+    must not create directories or open files, or every test (and every tool
+    that merely wants ``clamp_geometry``) needs a writable home directory.
+    """
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        filename=LOG_FILE,
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        encoding="utf-8",
+    )
+
 
 ctk.set_appearance_mode("light")
 
@@ -2364,6 +2372,7 @@ class WidgetApp:
 
 
 if __name__ == "__main__":
+    configure_logging()
     instance_mutex = acquire_single_instance()
     if instance_mutex is not None:
         app = WidgetApp()
