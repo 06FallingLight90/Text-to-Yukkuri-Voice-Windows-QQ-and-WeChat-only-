@@ -32,6 +32,16 @@ user32 = ctypes.windll.user32
 # all of it recorded as silence. Every wait in this project is explicit instead.
 pyautogui.PAUSE = 0
 
+# pyautogui's fail-safe aborts the call whenever the *cursor* sits on one of the
+# four corners of the primary monitor, and ``click`` checks it again right after
+# moving - so a mouse left in a corner, or a coordinate Windows clamps to a
+# corner, becomes "FailSafe triggered from mouse moving to a corner" in the
+# middle of a send, leaving the chat client recording. That escape hatch is for
+# someone watching a script in a terminal; this is a GUI with its own stop
+# button. :func:`ensure_click_target` refuses impossible coordinates up front
+# instead, which is the failure the user can actually act on.
+pyautogui.FAILSAFE = False
+
 #: Below this client size, calibrated offsets stop making sense.
 MIN_WINDOW_WIDTH = 650
 MIN_WINDOW_HEIGHT = 500
@@ -126,6 +136,54 @@ def client_geometry(hwnd: int) -> tuple[int, int, int, int, int, int]:
 
 def primary_screen_size() -> tuple[int, int]:
     return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+
+
+# --- click targets ----------------------------------------------------------
+
+
+def virtual_screen_bounds() -> tuple[int, int, int, int]:
+    """``(left, top, right, bottom)`` of the whole virtual desktop.
+
+    Unlike :func:`primary_screen_size`, this covers every monitor, so it is the
+    right question to ask before moving the cursor: it is where Windows can
+    actually put the pointer.
+    """
+    left = user32.GetSystemMetrics(76)  # SM_XVIRTUALSCREEN
+    top = user32.GetSystemMetrics(77)  # SM_YVIRTUALSCREEN
+    width = user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
+    height = user32.GetSystemMetrics(79)  # SM_CYVIRTUALSCREEN
+    if width <= 0 or height <= 0:  # pragma: no cover - headless session
+        width, height = primary_screen_size()
+        left = top = 0
+    return left, top, left + width, top + height
+
+
+def ensure_click_target(hwnd: int, point: tuple[int, int], what: str) -> None:
+    """Refuse a click that would not land inside the target's client area.
+
+    Windows moves the cursor to the nearest pixel it can reach when asked for a
+    coordinate outside the desktop, so a stale or mis-calibrated point does not
+    fail: it silently clicks wherever the pointer ended up - and when that
+    pixel is a corner, pyautogui used to report its fail-safe instead of the
+    coordinate that was actually wrong.
+
+    Raises :class:`CalibrationError`, which is the user's cue to re-run the
+    calibration tool.
+    """
+    left, top, _width, _height, right, bottom = client_geometry(hwnd)
+    x, y = int(point[0]), int(point[1])
+    if not (left <= x < right and top <= y < bottom):
+        raise CalibrationError(
+            f"{what}的坐标 ({x}, {y}) 落在窗口客户区 "
+            f"({left}, {top})–({right}, {bottom}) 之外，请重新标定坐标。"
+        )
+    screen_left, screen_top, screen_right, screen_bottom = virtual_screen_bounds()
+    if not (screen_left <= x < screen_right and screen_top <= y < screen_bottom):
+        raise CalibrationError(
+            f"{what}的坐标 ({x}, {y}) 在屏幕之外（可用范围 "
+            f"({screen_left}, {screen_top})–({screen_right}, {screen_bottom})），"
+            "请把窗口拖回屏幕内并重新标定坐标。"
+        )
 
 
 def fully_on_primary_monitor(hwnd: int) -> bool:
@@ -442,12 +500,33 @@ def client_capture_box(
 
 
 def capture_region(box: tuple[int, int, int, int]) -> np.ndarray | None:
-    """Photograph a screen-space box as an ``(h, w, 3)`` uint8 RGB array."""
+    """Photograph a screen-space ``(left, top, right, bottom)`` box as RGB.
+
+    pyscreeze's ``region`` argument is ``(left, top, width, height)`` and it
+    crops to ``(left, top, left + width, top + height)``. Handing it a
+    right/bottom pair therefore does not photograph the box: it photographs
+    everything between the box's top-left corner and the bottom-right corner of
+    the screen, padded with black where that runs off the edge. That is how a
+    green voice bubble elsewhere in the chat could be read as WeChat's recording
+    send button - and how the "send button" could be computed to be a screen
+    corner. Convert here, once, so every caller can keep thinking in corners.
+    """
+    left, top, right, bottom = (int(value) for value in box)
+    width = right - left
+    height = bottom - top
+    if width <= 0 or height <= 0:
+        logging.warning("截图区域无效（%s），跳过", box)
+        return None
     try:
-        image = pyautogui.screenshot(region=box)
+        image = pyautogui.screenshot(region=(left, top, width, height))
     except Exception:
         logging.debug("截图失败", exc_info=True)
         return None
+    if image.size != (width, height):
+        # crop() pads with black rather than failing, so this is worth knowing.
+        logging.warning(
+            "截图尺寸不符：请求 %dx%d，实际 %s", width, height, image.size
+        )
     return np.asarray(image.convert("RGB"))
 
 
@@ -477,6 +556,7 @@ __all__ = [
     "explain_window_search",
     "client_capture_box",
     "client_geometry",
+    "ensure_click_target",
     "find_windows",
     "force_client_size",
     "foreground_process_name",
@@ -488,6 +568,7 @@ __all__ = [
     "primary_screen_size",
     "require_foreground",
     "save_offsets",
+    "virtual_screen_bounds",
     "window_class_name",
     "window_title",
 ]

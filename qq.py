@@ -31,6 +31,7 @@ from windowing import (
     MIN_WINDOW_WIDTH,
     activate_window,
     client_geometry,
+    ensure_click_target,
     find_windows,
     force_client_size,
     foreground_window,
@@ -334,6 +335,9 @@ def enter_voice_mode(hwnd: int) -> dict[str, tuple[int, int]]:
 
     points = qq_voice_control_points(hwnd, offsets=offsets)
 
+    # Pressing outside the window would hold the mouse button down over whatever
+    # happens to be there, so check before the press, not after.
+    ensure_click_target(hwnd, points["record"], "QQ「按住说话」按钮")
     pyautogui.moveTo(*points["record"])
     pyautogui.mouseDown()
     _holding = True

@@ -19,6 +19,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import numpy as np
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -26,6 +30,7 @@ sys.path.insert(0, str(ROOT))
 import engine  # noqa: E402
 import hotkeys  # noqa: E402
 import translate  # noqa: E402
+import wechat  # noqa: E402
 import windowing  # noqa: E402
 
 
@@ -372,6 +377,195 @@ class EnglishPlanTests(unittest.TestCase):
         self.assertEqual(engine.VoiceEngine.english_plan(config, "我喜欢油库里"), "")
         config.language = "raw"
         self.assertEqual(engine.VoiceEngine.english_plan(config, "Hello"), "")
+
+
+class ScreenshotRegionTests(unittest.TestCase):
+    """截图区域的坐标语义——"微信明明没在录音，却说微信在录音"的根因。
+
+    pyscreeze 的 ``region`` 是 ``(left, top, width, height)``，内部裁剪成
+    ``(left, top, left + width, top + height)``。这里曾经直接把
+    ``(left, top, right, bottom)`` 传下去，于是"客户区右下角 460×84 的扫描框"
+    实际抓的是从框左上角一直到屏幕右下角的一大片（贴屏幕角时甚至是整屏）。聊天里的
+    绿色语音气泡因此被当成录音发送键，点击坐标也可能被算到屏幕角落上。
+    """
+
+    def capture(self, box):
+        seen = {}
+
+        def fake_screenshot(region=None, **_kwargs):
+            seen["region"] = region
+            return Image.new("RGB", (region[2], region[3]))
+
+        with mock.patch.object(windowing.pyautogui, "screenshot", fake_screenshot):
+            return windowing.capture_region(box), seen
+
+    def test_region_is_converted_to_width_and_height(self) -> None:
+        image, seen = self.capture((1000, 700, 1200, 784))
+        self.assertEqual(seen["region"], (1000, 700, 200, 84))
+        self.assertEqual(image.shape, (84, 200, 3))
+
+    def test_the_whole_screen_is_never_photographed(self) -> None:
+        # (left + right, top + bottom) was the far corner of the old crop: on a
+        # 2560×1440 screen this box used to return all 2560×1440 of it.
+        _image, seen = self.capture((2100, 1356, 2560, 1440))
+        self.assertEqual(seen["region"], (2100, 1356, 460, 84))
+
+    def test_an_empty_box_is_refused(self) -> None:
+        self.assertIsNone(windowing.capture_region((100, 100, 100, 100)))
+
+
+class ScanBoxTests(unittest.TestCase):
+    """扫描框必须正好是客户区右下角那 460×84，并且不越出屏幕。"""
+
+    def box_for(self, geometry, screen=(2560, 1440)):
+        with mock.patch.object(wechat, "client_geometry", lambda hwnd: geometry), \
+             mock.patch.object(wechat.windowing, "primary_screen_size", lambda: screen):
+            return wechat.scan_box(1)
+
+    def test_it_is_the_bottom_right_corner(self) -> None:
+        # left, top, width, height, right, bottom
+        box = self.box_for((300, 200, 1200, 800, 1500, 1000))
+        self.assertEqual(
+            box,
+            (1500 - wechat.SCAN_WIDTH, 1000 - wechat.SCAN_HEIGHT, 1500, 1000),
+        )
+
+    def test_a_window_off_the_primary_monitor_has_no_box(self) -> None:
+        self.assertIsNone(self.box_for((-2000, 100, 1200, 800, -800, 900)))
+
+    def test_the_box_stops_at_the_screen_edge(self) -> None:
+        # A window hanging off the bottom-right: the box is anchored to the
+        # window corner and then clipped, so it never asks for pixels that are
+        # not on the screen (pyscreeze pads those with black instead of failing).
+        box = self.box_for((1500, 700, 1200, 800, 2700, 1500))
+        self.assertGreaterEqual(box[0], 0)
+        self.assertGreaterEqual(box[1], 0)
+        self.assertLessEqual(box[2], 2560)
+        self.assertLessEqual(box[3], 1440)
+        self.assertGreater(box[2] - box[0], 0)
+        self.assertGreater(box[3] - box[1], 0)
+
+
+class GreenDetectionTests(unittest.TestCase):
+    """绿色判据只看扫描框里的像素，而且要有足够多才算一个按钮。"""
+
+    def point_for(self, frame, box=(2100, 1356, 2560, 1440)):
+        with mock.patch.object(wechat, "scan_box", lambda hwnd: box), \
+             mock.patch.object(wechat, "capture_region", lambda captured: frame):
+            return wechat.find_recording_send_point(1)
+
+    def test_a_green_disc_becomes_a_screen_coordinate(self) -> None:
+        frame = np.zeros((wechat.SCAN_HEIGHT, wechat.SCAN_WIDTH, 3), dtype=np.uint8)
+        frame[30:50, 400:420] = (7, 193, 96)  # WeChat's send-button green
+        # Centroid of rows 30–49 / columns 400–419, rounded, plus the box origin.
+        self.assertEqual(self.point_for(frame), (2100 + 410, 1356 + 40))
+
+    def test_the_search_photographs_exactly_the_box_it_asked_for(self) -> None:
+        seen = {}
+        frame = np.zeros((wechat.SCAN_HEIGHT, wechat.SCAN_WIDTH, 3), dtype=np.uint8)
+        box = (2100, 1356, 2560, 1440)
+
+        def fake_capture(captured):
+            seen["box"] = captured
+            return frame
+
+        with mock.patch.object(wechat, "scan_box", lambda hwnd: box), \
+             mock.patch.object(wechat, "capture_region", fake_capture):
+            wechat.find_recording_send_point(1)
+        self.assertEqual(seen["box"], box)
+
+    def test_a_few_green_pixels_are_not_a_button(self) -> None:
+        frame = np.zeros((wechat.SCAN_HEIGHT, wechat.SCAN_WIDTH, 3), dtype=np.uint8)
+        frame[0:5, 0:20] = (7, 193, 96)  # 100 px, below MIN_GREEN_PIXELS
+        self.assertIsNone(self.point_for(frame))
+
+
+class ClickTargetTests(unittest.TestCase):
+    """点之前先确认坐标真的落在窗口里，而不是让 Windows 把光标夹到屏幕角上。"""
+
+    def test_a_point_inside_the_client_area_is_accepted(self) -> None:
+        with mock.patch.object(
+            windowing, "client_geometry", lambda hwnd: (100, 100, 800, 600, 900, 700)
+        ):
+            windowing.ensure_click_target(1, (500, 400), "测试按钮")
+
+    def test_a_point_outside_the_client_area_is_refused(self) -> None:
+        with mock.patch.object(
+            windowing, "client_geometry", lambda hwnd: (100, 100, 800, 600, 900, 700)
+        ):
+            with self.assertRaises(windowing.CalibrationError):
+                windowing.ensure_click_target(1, (1200, 400), "测试按钮")
+
+    def test_a_minimized_window_cannot_be_clicked(self) -> None:
+        # GetClientRect on a minimized window reports -32000; the point can be
+        # "inside" that rectangle and still be nowhere near the screen.
+        geometry = (-32000, -32000, 800, 600, -31200, -31400)
+        with mock.patch.object(windowing, "client_geometry", lambda hwnd: geometry), \
+             mock.patch.object(
+                 windowing, "virtual_screen_bounds", lambda: (0, 0, 2560, 1440)
+             ):
+            with self.assertRaises(windowing.CalibrationError):
+                windowing.ensure_click_target(1, (-31600, -31700), "测试按钮")
+
+    def test_pyautogui_fail_safe_is_off(self) -> None:
+        # A mouse parked in a screen corner must not abort a send half-way.
+        self.assertFalse(windowing.pyautogui.FAILSAFE)
+
+
+class StuckRecordingTests(unittest.TestCase):
+    """上一次失败会把微信留在录音模式：要自己按 Esc 取消，而不是拒绝发送。"""
+
+    def enter(self, *, visible):
+        """Drive enter_voice_mode with every Win32 and input call stubbed out."""
+        pressed = []
+        clicked = []
+        with mock.patch.object(wechat, "load_offsets", lambda: dict(wechat.DEFAULTS)), \
+             mock.patch.object(wechat, "voice_mode_visible", visible), \
+             mock.patch.object(wechat, "scan_summary", lambda hwnd: "测试扫描结果"), \
+             mock.patch.object(
+                 wechat, "force_canonical_size", lambda hwnd, size: tuple(size)
+             ), \
+             mock.patch.object(
+                 wechat,
+                 "wechat_voice_control_points",
+                 lambda hwnd, offsets=None: {"open": (500, 400)},
+             ), \
+             mock.patch.object(wechat, "wait_for_recording", lambda hwnd: (700, 660)), \
+             mock.patch.object(
+                 windowing,
+                 "client_geometry",
+                 lambda hwnd: (100, 100, 800, 600, 900, 700),
+             ), \
+             mock.patch.object(
+                 windowing, "virtual_screen_bounds", lambda: (0, 0, 2560, 1440)
+             ), \
+             mock.patch.object(
+                 wechat.pyautogui, "press", lambda key: pressed.append(key)
+             ), \
+             mock.patch.object(
+                 wechat.pyautogui, "click", lambda x, y: clicked.append((x, y))
+             ):
+            points = wechat.enter_voice_mode(1)
+        return points, pressed, clicked
+
+    def test_escape_clears_a_leftover_recording_and_the_send_continues(self) -> None:
+        visible = [True, False]  # detected once, gone after Escape
+        points, pressed, clicked = self.enter(
+            visible=lambda hwnd: visible.pop(0) if visible else False
+        )
+        self.assertEqual(pressed, ["escape"])
+        self.assertEqual(clicked, [(500, 400)])
+        self.assertEqual(points["send"], (700, 660))
+        self.assertEqual(
+            points["cancel"], (700 - int(wechat.DEFAULTS["cancel_gap"]), 660)
+        )
+
+    def test_a_recording_that_survives_escape_is_reported_with_numbers(self) -> None:
+        with self.assertRaises(RuntimeError) as caught:
+            self.enter(visible=lambda hwnd: True)
+        message = str(caught.exception)
+        self.assertIn("测试扫描结果", message)
+        self.assertIn("反馈给作者", message)
 
 
 if __name__ == "__main__":
