@@ -706,7 +706,7 @@ stdin 每行一个 JSON 请求，stdout 每行一个 JSON 回复：
 | 「合成依赖未安装」 | 在 `synth/` 目录执行 `npm install` |
 | 「点击后微信没有进入语音录制模式」 | 放大微信窗口到 650×500 以上；确认当前聊天支持语音 |
 | 「当前前台窗口不是微信」 | 手动点开目标聊天再重试 |
-| 日志 | `%USERPROFILE%\.youkuli-chaspeak\widget.log` |
+| 日志 | `%USERPROFILE%\.youkuli-chaspeak\widget.log`。**超过 1 MB 会自动滚动**：`widget.log` 是最新的，`widget.log.1` / `.2` 是之前两段（各不超过 1 MB），更早的会丢弃。反馈问题时只发 `widget.log` 就够 |
 
 列出音频设备（确认 CABLE 端点名称）：
 

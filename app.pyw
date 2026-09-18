@@ -13,6 +13,7 @@ import tkinter as tk
 import winsound
 from ctypes import wintypes
 from io import BytesIO
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from tkinter import messagebox
 
@@ -95,6 +96,12 @@ APP_NAME = "文字转油库里"
 CONFIG_DIR = engine.CONFIG_DIR
 CONFIG_FILE = engine.CONFIG_FILE
 LOG_FILE = CONFIG_DIR / "widget.log"
+#: The log is rolled over rather than left to grow for as long as the program is
+#: installed: a bug report only ever needs the most recent part, and an install
+#: that runs for months would otherwise accumulate megabytes. ``widget.log`` is
+#: the current file; ``widget.log.1`` and ``.2`` hold the two previous ones.
+LOG_MAX_BYTES = 1024 * 1024
+LOG_BACKUP_COUNT = 2
 ASSET_DIR = Path(__file__).resolve().parent / "assets"
 ICON_DIR = ASSET_DIR / "material_symbols"
 APP_ICON_PATH = ASSET_DIR / "app-icon.ico"
@@ -188,19 +195,24 @@ class NotifyIconData(ctypes.Structure):
     ]
 
 def configure_logging() -> None:
-    """Point the log at the user's config directory.
+    """Point the log at the user's config directory, rolling it over as it grows.
 
     Called from the entry point rather than at import time: importing a module
     must not create directories or open files, or every test (and every tool
     that merely wants ``clamp_geometry``) needs a writable home directory.
     """
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        filename=LOG_FILE,
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
+    # A rotating handler rather than basicConfig(filename=...): the plain form
+    # grows for as long as the program stays installed, and only the most recent
+    # part of a log is ever useful.
+    handler = RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=LOG_MAX_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
         encoding="utf-8",
     )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 
 ctk.set_appearance_mode("light")
