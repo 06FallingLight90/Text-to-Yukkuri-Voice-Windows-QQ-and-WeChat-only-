@@ -21,7 +21,6 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-import numpy as np
 import psutil
 import pyautogui
 
@@ -466,95 +465,13 @@ def save_offsets(path: Path, values: dict) -> Path:
     return path
 
 
-# --- screen capture ---------------------------------------------------------
-#
-# pyautogui/pyscreeze capture the primary monitor only, whose origin is (0, 0).
-# Anything measured in screen coordinates must therefore be clamped to it, and a
-# window on a secondary monitor cannot be photographed at all.
-
-
-def client_capture_box(
-    hwnd: int, *, bottom_fraction: float = 1.0, margin: int = 0
-) -> tuple[int, int, int, int] | None:
-    """A screen-space box covering the client area, clipped to the primary monitor.
-
-    ``bottom_fraction`` keeps only the lower part of the client area, which is
-    where input toolbars and recording overlays live. Returns ``None`` when the
-    window is not on the primary monitor.
-    """
-    left, top, _width, height, right, bottom = client_geometry(hwnd)
-    if bottom_fraction < 1.0:
-        top = top + int(height * (1.0 - bottom_fraction))
-
-    primary_width, primary_height = primary_screen_size()
-    if right <= 0 or left >= primary_width or bottom <= 0 or top >= primary_height:
-        return None
-
-    box_left = max(0, left - margin)
-    box_top = max(0, top - margin)
-    box_right = min(primary_width, right + margin)
-    box_bottom = min(primary_height, bottom + margin)
-    if box_right - box_left < 40 or box_bottom - box_top < 20:
-        return None
-    return box_left, box_top, box_right, box_bottom
-
-
-def capture_region(box: tuple[int, int, int, int]) -> np.ndarray | None:
-    """Photograph a screen-space ``(left, top, right, bottom)`` box as RGB.
-
-    pyscreeze's ``region`` argument is ``(left, top, width, height)`` and it
-    crops to ``(left, top, left + width, top + height)``. Handing it a
-    right/bottom pair therefore does not photograph the box: it photographs
-    everything between the box's top-left corner and the bottom-right corner of
-    the screen, padded with black where that runs off the edge. That is how a
-    green voice bubble elsewhere in the chat could be read as WeChat's recording
-    send button - and how the "send button" could be computed to be a screen
-    corner. Convert here, once, so every caller can keep thinking in corners.
-    """
-    left, top, right, bottom = (int(value) for value in box)
-    width = right - left
-    height = bottom - top
-    if width <= 0 or height <= 0:
-        logging.warning("截图区域无效（%s），跳过", box)
-        return None
-    try:
-        image = pyautogui.screenshot(region=(left, top, width, height))
-    except Exception:
-        logging.debug("截图失败", exc_info=True)
-        return None
-    if image.size != (width, height):
-        # crop() pads with black rather than failing, so this is worth knowing.
-        logging.warning(
-            "截图尺寸不符：请求 %dx%d，实际 %s", width, height, image.size
-        )
-    return np.asarray(image.convert("RGB"))
-
-
-def changed_fraction(
-    first: np.ndarray, second: np.ndarray, *, per_pixel_threshold: int = 24
-) -> float:
-    """Fraction of pixels that changed noticeably between two images.
-
-    Preferred over a mean absolute difference for spotting an overlay that only
-    covers part of the region: a mean over a large area dilutes a localized
-    change, while this counts it directly.
-    """
-    if first.shape != second.shape or first.size == 0:
-        return 0.0
-    delta = np.abs(first.astype(np.int16) - second.astype(np.int16)).max(axis=2)
-    return float((delta > per_pixel_threshold).mean())
-
-
 __all__ = [
     "CHROMIUM_WINDOW_CLASS",
     "CalibrationError",
     "MIN_WINDOW_HEIGHT",
     "MIN_WINDOW_WIDTH",
     "activate_window",
-    "capture_region",
-    "changed_fraction",
     "explain_window_search",
-    "client_capture_box",
     "client_geometry",
     "ensure_click_target",
     "find_windows",

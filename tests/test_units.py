@@ -22,9 +22,6 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
-import numpy as np
-from PIL import Image
-
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -379,41 +376,6 @@ class EnglishPlanTests(unittest.TestCase):
         self.assertEqual(engine.VoiceEngine.english_plan(config, "我喜欢油库里"), "")
         config.language = "raw"
         self.assertEqual(engine.VoiceEngine.english_plan(config, "Hello"), "")
-
-
-class ScreenshotRegionTests(unittest.TestCase):
-    """截图区域的坐标语义——"微信明明没在录音，却说微信在录音"的根因。
-
-    pyscreeze 的 ``region`` 是 ``(left, top, width, height)``，内部裁剪成
-    ``(left, top, left + width, top + height)``。这里曾经直接把
-    ``(left, top, right, bottom)`` 传下去，于是"客户区右下角 460×84 的扫描框"
-    实际抓的是从框左上角一直到屏幕右下角的一大片（贴屏幕角时甚至是整屏）。聊天里的
-    绿色语音气泡因此被当成录音发送键，点击坐标也可能被算到屏幕角落上。
-    """
-
-    def capture(self, box):
-        seen = {}
-
-        def fake_screenshot(region=None, **_kwargs):
-            seen["region"] = region
-            return Image.new("RGB", (region[2], region[3]))
-
-        with mock.patch.object(windowing.pyautogui, "screenshot", fake_screenshot):
-            return windowing.capture_region(box), seen
-
-    def test_region_is_converted_to_width_and_height(self) -> None:
-        image, seen = self.capture((1000, 700, 1200, 784))
-        self.assertEqual(seen["region"], (1000, 700, 200, 84))
-        self.assertEqual(image.shape, (84, 200, 3))
-
-    def test_the_whole_screen_is_never_photographed(self) -> None:
-        # (left + right, top + bottom) was the far corner of the old crop: on a
-        # 2560×1440 screen this box used to return all 2560×1440 of it.
-        _image, seen = self.capture((2100, 1356, 2560, 1440))
-        self.assertEqual(seen["region"], (2100, 1356, 460, 84))
-
-    def test_an_empty_box_is_refused(self) -> None:
-        self.assertIsNone(windowing.capture_region((100, 100, 100, 100)))
 
 
 class RecordingDetectionTests(unittest.TestCase):

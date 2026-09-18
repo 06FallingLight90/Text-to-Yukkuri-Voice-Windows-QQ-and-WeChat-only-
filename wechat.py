@@ -58,7 +58,6 @@ from windowing import (
     MIN_WINDOW_HEIGHT,
     MIN_WINDOW_WIDTH,
     activate_window,
-    client_capture_box,
     client_geometry,
     ensure_click_target,
     find_windows,
@@ -305,9 +304,12 @@ def enter_voice_mode(hwnd: int) -> dict[str, tuple[int, int]]:
             "请依次检查：\n"
             f"  1) 输入框里有没有还没发出去的文字 —— 有的话那里显示的是「发送」"
             "按钮而不是「语音」按钮，清空输入框再试；\n"
-            "  2) 那个位置是不是「语音」按钮（不是，就双击 tools\\校准坐标.bat "
+            "  2) 屏幕上有没有多出来的小窗口盖着微信 —— 安全软件（火绒、360 等）"
+            "第一次会问「是否允许某程序使用麦克风」，那个弹窗正好压在微信上，"
+            "微信的语音按钮会变灰、中间转圈。把它点成允许，再发一次就好；\n"
+            "  3) 那个位置是不是「语音」按钮（不是，就双击 tools\\校准坐标.bat "
             "重新标定）；\n"
-            "  3) 录音端点能不能用 —— 别的程序（录音软件、OBS、语音通话）占着 "
+            "  4) 录音端点能不能用 —— 别的程序（录音软件、OBS、语音通话）占着 "
             f"{audio.DEFAULT_CAPTURE_DEVICE_NAME} 时微信录不了音，"
             "`python tools\\check_default_devices.py` 能看到端点状态。"
         )
@@ -420,7 +422,6 @@ __all__ = [
     "activate_wechat_window",
     "all_candidate_windows",
     "activate_main_window",
-    "client_capture_box",
     "client_geometry",
     "enter_voice_mode",
     "find_main_windows",
