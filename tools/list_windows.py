@@ -130,10 +130,11 @@ def main() -> int:
     module = targets.get(args.target)
     wanted = {name.casefold() for name in module.PROCESS_NAMES}
     expected_title = getattr(module, "WINDOW_TITLE", None)
+    expected_class = getattr(module, "WINDOW_CLASS_SUFFIX", None)
 
     print("=" * 100)
     print(f"目标：{module.LABEL}   进程名：{sorted(module.PROCESS_NAMES)}   "
-          f"要求的窗口标题：{expected_title!r}")
+          f"要求的窗口标题：{expected_title!r}   标题不匹配时看类名后缀：{expected_class!r}")
     print("=" * 100)
 
     windows = all_top_level_windows()
@@ -169,6 +170,7 @@ def main() -> int:
     for window in candidates:
         process_ok = window.process.casefold() in wanted
         title_ok = expected_title is None or window.title == expected_title
+        class_ok = expected_class is None or window.window_class.endswith(expected_class)
         checks = [
             ("进程名在名单里", process_ok, window.process),
             ("窗口可见", window.visible, "" if window.visible else "被收进托盘或已隐藏"),
@@ -178,8 +180,18 @@ def main() -> int:
                 title_ok,
                 repr(window.title),
             ),
+            (
+                f"类名以 {expected_class!r} 结尾" if expected_class else "类名无需匹配",
+                class_ok,
+                window.window_class,
+            ),
         ]
-        verdict = all(ok for _name, ok, _detail in checks)
+        # The application accepts either signal - the title up to WeChat 4.1.13,
+        # the window class on 4.1.15+ - so the verdict is an OR even though every
+        # condition is still shown on its own line.
+        verdict = (
+            process_ok and window.visible and bool(window.title) and (title_ok or class_ok)
+        )
         print()
         print(f"  hwnd={window.hwnd} pid={window.pid} 进程={window.process} "
               f"类名={window.window_class} 尺寸={window.width}x{window.height} "
@@ -205,8 +217,8 @@ def main() -> int:
         version = file_version(executable)
         print(f"  客户端路径：{executable}")
         print(f"  客户端版本：{version or '（读不到）'}")
-        print("  本项目验证过的版本：微信 4.1.13 / QQ 9.9.21。版本对不上时，")
-        print("  窗口标题或进程名都可能已经变了，请把上面这行版本号一起反馈。")
+        print("  本项目验证过的版本：微信 4.1.13.12 / 4.1.15.11、QQ 9.9.21。版本对不上时，")
+        print("  窗口标题、窗口类或进程名都可能已经变了，请把上面这行版本号一起反馈。")
 
     print()
     print("【四】结论")

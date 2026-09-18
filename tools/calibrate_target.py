@@ -244,7 +244,9 @@ def prepare_window(module) -> tuple[int, tuple[int, int, int, int, int, int], st
         print(
             "  "
             + windowing.explain_window_search(
-                module.PROCESS_NAMES, getattr(module, "WINDOW_TITLE", None)
+                module.PROCESS_NAMES,
+                getattr(module, "WINDOW_TITLE", None),
+                getattr(module, "WINDOW_CLASS_SUFFIX", None),
             ).replace("\n", "\n  ")
         )
         return None

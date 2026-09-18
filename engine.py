@@ -342,7 +342,9 @@ class VoiceEngine:
             # them, and nothing was written to the log at all, so a user whose
             # WeChat was plainly on screen had nothing to go on.
             reason = windowing.explain_window_search(
-                module.PROCESS_NAMES, getattr(module, "WINDOW_TITLE", None)
+                module.PROCESS_NAMES,
+                getattr(module, "WINDOW_TITLE", None),
+                getattr(module, "WINDOW_CLASS_SUFFIX", None),
             )
             if reason != self._last_window_reason:
                 self._last_window_reason = reason

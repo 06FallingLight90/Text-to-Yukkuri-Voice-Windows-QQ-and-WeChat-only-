@@ -316,7 +316,9 @@ def force_client_size(hwnd: int, size: tuple[int, int]) -> tuple[int, int]:
     return client_width, client_height
 
 
-def explain_window_search(process_names: set[str], title: str | None) -> str:
+def explain_window_search(
+    process_names: set[str], title: str | None, class_suffix: str | None = None
+) -> str:
     """Why a search for a client's main window came up empty.
 
     The application can only say "请打开微信并点开要发送的聊天窗口", which is no
@@ -325,6 +327,10 @@ def explain_window_search(process_names: set[str], title: str | None) -> str:
     failed, including the one the search cannot report because it deliberately
     ignores it: a window whose process name could not be read at all (a client
     running elevated, or an antivirus blocking the query) is skipped silently.
+
+    ``class_suffix`` mirrors the fallback the target uses when the title no longer
+    matches (WeChat 4.1.15 renamed its main window), so the verdict stays true to
+    what the application actually does.
 
     Read-only, and cheap enough to call when something already went wrong.
     """
@@ -381,6 +387,21 @@ def explain_window_search(process_names: set[str], title: str | None) -> str:
 
     matching = [hwnd for hwnd, window_title, _shown in theirs if window_title == title]
     if not matching:
+        if class_suffix:
+            classes = {hwnd: window_class_name(hwnd) for hwnd, _t, _s in theirs}
+            if any(klass.endswith(class_suffix) for klass in classes.values()):
+                return (
+                    f"找到 {len(theirs)} 个 {names} 的窗口，标题都不是 {title!r}"
+                    f"（{titles}），但有一个窗口的类名以 {class_suffix!r} 结尾，"
+                    "应用据此认出了主窗口。"
+                    "如果应用仍提示找不到，确认跑应用和跑标定的是同一个用户。"
+                )
+            return (
+                f"找到 {len(theirs)} 个 {names} 的窗口，标题都不是 {title!r}"
+                f"（{titles}），也没有任何一个的类名以 {class_suffix!r} 结尾。"
+                f"程序看到的窗口类名：{sorted(set(classes.values()))}。"
+                "这个版本可能把标题和窗口类都改了，把这一行发给作者即可。"
+            )
         return (
             f"找到 {len(theirs)} 个 {names} 的窗口，但标题都不是 {title!r}：{titles}。"
             f"应用只认标题恰好是 {title!r} 的那个（主窗口）；你看到的可能是独立聊天窗口，"

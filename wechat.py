@@ -63,12 +63,19 @@ from windowing import (
     find_windows,
     force_client_size,
     is_minimized,
+    window_class_name,
 )
 
 KEY = "wechat"
 LABEL = "微信"
 PROCESS_NAMES = {"weixin.exe", "wechat.exe"}
 WINDOW_TITLE = "微信"
+
+#: Window class suffix of WeChat's main window. 4.1.15 stopped titling it ``微信``
+#: (it carries the signed-in account's name there now), so on that build the class
+#: is what identifies the main window. Only the suffix is compared, because the Qt
+#: version prefix changes with every release.
+WINDOW_CLASS_SUFFIX = "QWindowIcon"
 
 #: Offset of WeChat's voice button from the client area's bottom-right corner.
 DEFAULT_OPEN_OFFSET = (-122, -27)
@@ -147,8 +154,25 @@ def save_offsets(
 
 
 def find_wechat_windows() -> list[int]:
-    """Every visible top-level window titled 微信 that belongs to WeChat."""
-    return [hwnd for hwnd, _title in find_windows(PROCESS_NAMES, WINDOW_TITLE)]
+    """Every visible top-level window that could be WeChat's main window.
+
+    The title is tried first: it is what tells several chat windows apart, and up
+    to WeChat 4.1.13 the main window was titled exactly ``微信``. 4.1.15 renamed
+    it - it now carries the signed-in account's name (observed as ``jat``) - so
+    when no title matches, the window class decides. That is the same rule
+    ``tools/list_windows.py`` shows per window, and it is version-tolerant: Qt's
+    version prefix moves with every release (``Qt51514...``) while the
+    ``QWindowIcon`` flavour is what separates a real window from WeChat's tool
+    windows (``...QWindowToolSaveBits``).
+    """
+    titled = [hwnd for hwnd, _title in find_windows(PROCESS_NAMES, WINDOW_TITLE)]
+    if titled:
+        return titled
+    return [
+        hwnd
+        for hwnd, _title in find_windows(PROCESS_NAMES)
+        if window_class_name(hwnd).endswith(WINDOW_CLASS_SUFFIX)
+    ]
 
 
 def all_candidate_windows() -> list[int]:
@@ -419,6 +443,7 @@ __all__ = [
     "OFFSETS_FILE",
     "PROCESS_NAMES",
     "SEND_TIMEOUT_SEC",
+    "WINDOW_CLASS_SUFFIX",
     "activate_wechat_window",
     "all_candidate_windows",
     "activate_main_window",

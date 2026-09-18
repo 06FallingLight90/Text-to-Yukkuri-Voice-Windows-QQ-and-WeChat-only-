@@ -461,6 +461,45 @@ class ClickTargetTests(unittest.TestCase):
         self.assertFalse(windowing.pyautogui.FAILSAFE)
 
 
+class WechatWindowSearchTests(unittest.TestCase):
+    """微信 4.1.15 把主窗口标题从「微信」改成了账号名，所以要能靠窗口类兜底。
+
+    同时必须保证老版本（标题恰好是「微信」）的行为一个字都不变。
+    """
+
+    def search(self, windows, classes=None):
+        """``windows`` stands in for find_windows; ``classes`` maps hwnd -> class."""
+        classes = classes or {}
+
+        def fake_find(_names, title=None):
+            return [entry for entry in windows if title is None or entry[1] == title]
+
+        with mock.patch.object(wechat, "find_windows", fake_find), mock.patch.object(
+            wechat, "window_class_name", lambda hwnd: classes.get(hwnd, "")
+        ):
+            return wechat.find_wechat_windows()
+
+    def test_the_title_still_decides_on_older_builds(self) -> None:
+        windows = [(1, "微信"), (2, "jat")]
+        self.assertEqual(self.search(windows, {1: "Qt51514QWindowIcon"}), [1])
+
+    def test_the_window_class_finds_it_when_the_title_changed(self) -> None:
+        # 4.1.15 titles the main window after the signed-in account.
+        windows = [(2, "jat")]
+        self.assertEqual(self.search(windows, {2: "Qt51514QWindowIcon"}), [2])
+
+    def test_wechat_tool_windows_are_not_main_windows(self) -> None:
+        windows = [(3, "Weixin")]
+        self.assertEqual(self.search(windows, {3: "Qt51514QWindowToolSaveBits"}), [])
+
+    def test_the_qt_version_prefix_does_not_matter(self) -> None:
+        windows = [(4, "jat")]
+        self.assertEqual(self.search(windows, {4: "Qt69999QWindowIcon"}), [4])
+
+    def test_nothing_visible_gives_nothing(self) -> None:
+        self.assertEqual(self.search([]), [])
+
+
 class RecordingStateTests(unittest.TestCase):
     """清理只在"这一轮确实看到微信开始录音、而且现在还在录"时才动手。
 
