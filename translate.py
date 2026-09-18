@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 import urllib.error
 import urllib.request
@@ -42,6 +43,19 @@ YOUDAO_ENDPOINT = "https://openapi.youdao.com/api"
 DEFAULT_OPENAI_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_OPENAI_MODEL = "deepseek-chat"
 
+#: Reasoning ("thinking") setting for the LLM provider. "default" sends
+#: nothing extra and behaves exactly like before; "off" asks thinking-capable
+#: models to answer directly; the levels map to OpenAI's ``reasoning_effort``.
+DEFAULT_OPENAI_REASONING = "default"
+REASONING_OPTIONS: tuple[str, ...] = ("default", "off", "low", "medium", "high")
+REASONING_LABELS: dict[str, str] = {
+    "default": "不干预（跟随接口默认）",
+    "off": "禁用思考",
+    "low": "允许思考 · 低",
+    "medium": "允许思考 · 中",
+    "high": "允许思考 · 高",
+}
+
 #: Prompt used for the LLM provider. Deliberately narrow: we want a translation,
 #: not a chat reply, and we want something a Japanese TTS engine can read.
 SYSTEM_PROMPT = (
@@ -51,6 +65,9 @@ SYSTEM_PROMPT = (
 )
 
 REQUEST_TIMEOUT_SEC = 20.0
+#: A thinking model reasons before answering and easily outlasts a plain chat
+#: call, so whenever the user turned thinking on explicitly we wait longer.
+REASONING_TIMEOUT_SEC = 90.0
 
 #: Wrapping quote pairs a model may add around the translation despite the
 #: instruction not to. Each maps an opening character to its closing partner.
@@ -72,6 +89,11 @@ def strip_wrapping_quotes(text: str) -> str:
     if _QUOTE_PAIRS.get(text[0]) == text[-1]:
         return text[1:-1].strip()
     return text
+
+
+#: Some endpoints return the model's reasoning inlined in the content instead
+#: of a separate field; it must never reach the TTS engine.
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
 class TranslationError(RuntimeError):
@@ -207,6 +229,7 @@ def translate_openai(
     api_key: str,
     model: str,
     *,
+    reasoning: str = DEFAULT_OPENAI_REASONING,
     timeout: float = REQUEST_TIMEOUT_SEC,
 ) -> str:
     """Translate through any OpenAI-compatible chat completions endpoint."""
@@ -215,23 +238,38 @@ def translate_openai(
         raise TranslationError("大模型翻译需要填写接口地址。")
     if not model.strip():
         raise TranslationError("大模型翻译需要填写模型名。")
+    if reasoning not in REASONING_OPTIONS:
+        reasoning = DEFAULT_OPENAI_REASONING
+    if reasoning != "default":
+        timeout = max(timeout, REASONING_TIMEOUT_SEC)
 
     url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
     headers = {}
     if api_key.strip():
         headers["Authorization"] = f"Bearer {api_key.strip()}"
 
+    payload = {
+        "model": model.strip(),
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": text},
+        ],
+        "temperature": 0,
+        "stream": False,
+    }
+    # Every provider spells "think" differently. The disable switch sends the
+    # two widely used spellings (Qwen, Zhipu GLM); the levels use OpenAI's
+    # effort knob. Strict endpoints reject unknown keys, which is exactly why
+    # "不干预" stays the default - the test button surfaces such errors.
+    if reasoning == "off":
+        payload["enable_thinking"] = False
+        payload["thinking"] = {"type": "disabled"}
+    elif reasoning in ("low", "medium", "high"):
+        payload["reasoning_effort"] = reasoning
+
     payload = _post_json(
         url,
-        {
-            "model": model.strip(),
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text},
-            ],
-            "temperature": 0,
-            "stream": False,
-        },
+        payload,
         headers=headers,
         timeout=timeout,
     )
@@ -246,7 +284,9 @@ def translate_openai(
     if not choices:
         raise TranslationError("翻译接口没有返回 choices。")
     content = (choices[0].get("message") or {}).get("content") or ""
-    content = str(content).strip()
+    # Endpoints that inline the reasoning (a raw <think> block in the content)
+    # would otherwise have it read aloud by the TTS engine.
+    content = _THINK_RE.sub("", str(content)).strip()
     if not content:
         raise TranslationError("翻译接口返回了空译文。")
     # Some models wrap the answer in quotes despite the instruction not to.
@@ -280,6 +320,7 @@ def translate_to_japanese(text: str, config) -> TranslationResult:
             config.openai_base_url,
             config.openai_api_key,
             config.openai_model,
+            reasoning=getattr(config, "openai_reasoning", DEFAULT_OPENAI_REASONING),
         )
     else:  # pragma: no cover - guarded above
         raise TranslationError(f"未知的翻译方式：{provider}")
@@ -297,8 +338,11 @@ def translate_to_japanese(text: str, config) -> TranslationResult:
 __all__ = [
     "DEFAULT_OPENAI_BASE_URL",
     "DEFAULT_OPENAI_MODEL",
+    "DEFAULT_OPENAI_REASONING",
     "PROVIDER_LABELS",
     "PROVIDERS",
+    "REASONING_LABELS",
+    "REASONING_OPTIONS",
     "TranslationError",
     "TranslationResult",
     "translate_openai",

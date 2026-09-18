@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 import winsound
 from ctypes import wintypes
@@ -1000,6 +1001,17 @@ class SettingsDialog(ctk.CTkToplevel):
             "大模型名称", owner.config.openai_model, 13
         )
 
+        field_label("大模型思考（是否允许推理）", 16)
+        self.reasoning_var = tk.StringVar(
+            value=translate.REASONING_LABELS[owner.config.openai_reasoning]
+        )
+        ctk.CTkOptionMenu(
+            card,
+            variable=self.reasoning_var,
+            values=[translate.REASONING_LABELS[key] for key in translate.REASONING_OPTIONS],
+            **menu_style,
+        ).pack(fill="x", padx=18)
+
         test_row = ctk.CTkFrame(card, fg_color="transparent")
         test_row.pack(fill="x", padx=18, pady=(16, 0))
         self.test_button = ctk.CTkButton(
@@ -1074,6 +1086,13 @@ class SettingsDialog(ctk.CTkToplevel):
                 return key
         return "off"
 
+    def current_reasoning(self) -> str:
+        label = self.reasoning_var.get()
+        for key, text in translate.REASONING_LABELS.items():
+            if text == label:
+                return key
+        return translate.DEFAULT_OPENAI_REASONING
+
     def current_target(self) -> str:
         label = self.target_var.get()
         for key, text in targets.TARGET_LABELS.items():
@@ -1130,11 +1149,17 @@ class SettingsDialog(ctk.CTkToplevel):
             self.openai_key_var.get().strip() or self.owner.config.openai_api_key
         )
         probe.openai_model = self.openai_model_var.get().strip()
+        probe.openai_reasoning = self.current_reasoning()
 
         def work() -> None:
             try:
+                started = time.monotonic()
                 result = translate.translate_to_japanese(sample, probe)
-                message = f"原文：{sample}\n译文：{result.text}"
+                elapsed = time.monotonic() - started
+                message = (
+                    f"原文：{sample}\n译文：{result.text}\n耗时 {elapsed:.2f} 秒"
+                    f"（{result.provider}）"
+                )
                 self.after(
                     0,
                     lambda: self.test_status.configure(
@@ -1234,6 +1259,7 @@ class SettingsDialog(ctk.CTkToplevel):
         self.owner.config.openai_model = (
             self.openai_model_var.get().strip() or translate.DEFAULT_OPENAI_MODEL
         )
+        self.owner.config.openai_reasoning = self.current_reasoning()
         # Blank secret fields leave the stored secret untouched.
         secret = self.youdao_secret_var.get().strip()
         if secret:
