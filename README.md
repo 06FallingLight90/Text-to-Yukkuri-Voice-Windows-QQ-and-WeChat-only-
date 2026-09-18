@@ -100,7 +100,7 @@
 
 ## 环境要求
 
-###若你完全没有这方面经验也不懂要装什么，看视频p2的教学：https://www.bilibili.com/video/BV1cZYk6gEEV
+### 若你完全没有这方面经验也不懂要装什么，看视频p2的教学：<https://www.bilibili.com/video/BV1cZYk6gEEV>
 
 | 项目 | 要求 |
 | --- | --- |
@@ -161,7 +161,7 @@ python tools\check_default_devices.py
 
 ## 安装
 
-###若你完全没有这方面经验可看视频p2的教学：https://www.bilibili.com/video/BV1cZYk6gEEV
+### 若你完全没有这方面经验可看视频p2的教学：<https://www.bilibili.com/video/BV1cZYk6gEEV>
 
 ```bat
 :: 末尾的 YukuriSpeak 是本地目录名。必须显式指定，否则 git 会用仓库名建目录
