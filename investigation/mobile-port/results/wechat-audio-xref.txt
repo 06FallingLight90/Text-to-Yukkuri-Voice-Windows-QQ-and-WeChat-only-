@@ -1,0 +1,41 @@
+# WeChat 8.0.77 — dex xref: direct callers of AudioRecord / MediaRecorder
+
+dexes with markers: ['classes12.dex', 'classes13.dex', 'classes14.dex', 'classes15.dex', 'classes16.dex', 'classes17.dex']
+[classes12.dex] callers:
+MediaRecorder  <- Lmp/e;  (e.g. .prepare -> prepare)
+[classes13.dex] callers:
+AudioRecord    <- Lcom/tencent/mm/plugin/voip/model/i1; *  (e.g. .i -> getAudioSource)
+AudioRecord    <- Lvp0/n;  (e.g. .invokeSuspend -> getMinBufferSize)
+AudioRecord    <- Lyl/w;  (e.g. .c -> getMinBufferSize)
+AudioRecord    <- Lyl/x;  (e.g. .onPeriodicNotification -> read)
+AudioRecord    <- Lyl/y;  (e.g. .a -> read)
+AudioRecord    <- Lyx1/f;  (e.g. .invokeSuspend -> getMinBufferSize)
+AudioRecord    <- Lzo/d;  (e.g. .<init> -> <init>)
+MediaRecorder  <- Lcom/tencent/mm/plugin/appbrand/jsapi/audio/b3; *  (e.g. .run -> reset)
+MediaRecorder  <- Lo51/l1;  (e.g. .startRecord -> setAudioEncoder)
+MediaRecorder  <- Lxm3/w;  (e.g. .b -> release)
+MediaRecorder  <- Lyl/i;  (e.g. .onError -> release)
+MediaRecorder  <- Lyl/t;  (e.g. .a -> getMaxAmplitude)
+MediaRecorder  <- Lyl/y0;  (e.g. .a -> setAudioEncoder)
+[classes14.dex] no direct callers found
+[classes15.dex] callers:
+AudioRecord    <- Lcom/tencent/liteav/audio2/LiteavAudioRecord2; *  (e.g. .createStartedAudioRecord -> <init>)
+AudioRecord    <- Lcom/tencent/liteav/audio2/SystemLoopbackRecorder2$Recorder; *  (e.g. .a -> getMinBufferSize)
+AudioRecord    <- Lsz/f;  (e.g. .run -> getRecordingState)
+AudioRecord    <- Lsz/g;  (e.g. .b -> <init>)
+AudioRecord    <- Lvp0/j;  (e.g. .onStop -> release)
+AudioRecord    <- Lvp0/o;  (e.g. .invoke -> release)
+AudioRecord    <- Lyx1/g;  (e.g. .stopRecord -> release)
+[classes16.dex] callers:
+AudioRecord    <- Lorg/webrtc/audio/WebRtcAudioManager; *  (e.g. .getMinInputFrameSize -> getMinBufferSize)
+AudioRecord    <- Lorg/webrtc/audio/WebRtcAudioRecord$AudioRecordThread; *  (e.g. .run -> getAudioFormat)
+AudioRecord    <- Lorg/webrtc/audio/WebRtcAudioRecord; *  (e.g. .createAudioRecordOnLowerThanM -> <init>)
+AudioRecord    <- Lorg/webrtc/voiceengine/WebRtcAudioManager; *  (e.g. .getMinInputFrameSize -> getMinBufferSize)
+AudioRecord    <- Lorg/webrtc/voiceengine/WebRtcAudioRecord$AudioRecordThread; *  (e.g. .run -> getRecordingState)
+AudioRecord    <- Lorg/webrtc/voiceengine/WebRtcAudioRecord$AudioSamples; *  (e.g. .<init> -> getAudioFormat)
+AudioRecord    <- Lorg/webrtc/voiceengine/WebRtcAudioRecord; *  (e.g. .initRecording -> <init>)
+AudioRecord    <- Lyl/b0;  (e.g. .run -> read)
+[classes17.dex] callers:
+AudioRecord    <- Lcm/e;  (e.g. .run -> read)
+AudioRecord    <- Lcm/g;  (e.g. .<init> -> <init>)
+AudioRecord    <- Lsi1/d;  (e.g. .f -> release)
